@@ -37,9 +37,10 @@ export default function OAuthCallback() {
         setTimeout(() => window.close(), 2000);
       })
       .catch(err => {
+        const detail = err.response?.data?.error || err.message;
         setStatus('error');
-        setMessage(`Errore: ${err.message}`);
-        window.opener?.postMessage({ type: 'oauth_error', error: err.message }, '*');
+        setMessage(`Errore: ${detail}`);
+        window.opener?.postMessage({ type: 'oauth_error', error: detail }, '*');
       });
   }, []);
 
