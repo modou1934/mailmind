@@ -22,9 +22,14 @@ export default function Integrazioni() {
 
   const loadAccounts = async () => {
     setLoading(true);
-    const res = await base44.functions.invoke('getConnectedAccounts', {});
-    setAccounts(res.data.accounts || []);
-    setLoading(false);
+    try {
+      const res = await base44.functions.invoke('getConnectedAccounts', {});
+      setAccounts(res.data.accounts || []);
+    } catch (e) {
+      setAccounts([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { loadAccounts(); }, []);
