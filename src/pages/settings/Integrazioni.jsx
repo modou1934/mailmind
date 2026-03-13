@@ -39,36 +39,46 @@ export default function Integrazioni() {
     const providerPath = provider === 'google' ? 'google' : 'microsoft';
     const redirect_uri = `${window.location.origin}/oauth/${providerPath}`;
 
-    const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri });
-    const authUrl = res.data.url;
+    try {
+      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri });
+      const authUrl = res.data.url;
 
-    // Open popup
-    const popup = window.open(authUrl, 'oauth', 'width=500,height=700,left=200,top=100');
+      const popup = window.open(authUrl, 'oauth', 'width=500,height=700,left=200,top=100');
 
-    // Listen for result
-    const handler = async (event) => {
-      if (event.data?.type === 'oauth_success') {
-        window.removeEventListener('message', handler);
+      if (!popup) {
+        toast({ title: 'Popup bloccato', description: 'Consenti i popup per questo sito e riprova.', variant: 'destructive' });
         setConnecting(null);
-        toast({ title: `Account connesso: ${event.data.email}` });
-        loadAccounts();
-      } else if (event.data?.type === 'oauth_error') {
-        window.removeEventListener('message', handler);
-        setConnecting(null);
-        toast({ title: 'Errore connessione', description: event.data.error, variant: 'destructive' });
+        return;
       }
-    };
-    window.addEventListener('message', handler);
 
-    // Fallback: poll if popup is closed
-    const poll = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(poll);
-        window.removeEventListener('message', handler);
-        setConnecting(null);
-        loadAccounts();
-      }
-    }, 1000);
+      const handler = (event) => {
+        if (event.data?.type === 'oauth_success') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnecting(null);
+          toast({ title: `Account connesso: ${event.data.email}` });
+          loadAccounts();
+        } else if (event.data?.type === 'oauth_error') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnecting(null);
+          toast({ title: 'Errore connessione', description: event.data.error, variant: 'destructive' });
+        }
+      };
+      window.addEventListener('message', handler);
+
+      const poll = setInterval(() => {
+        if (popup?.closed) {
+          clearInterval(poll);
+          window.removeEventListener('message', handler);
+          setConnecting(null);
+          loadAccounts();
+        }
+      }, 1000);
+    } catch (e) {
+      setConnecting(null);
+      toast({ title: 'Errore', description: e.message, variant: 'destructive' });
+    }
   };
 
   const disconnect = async (tokenId) => {
