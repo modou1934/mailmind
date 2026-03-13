@@ -43,7 +43,7 @@ export default function Integrazioni() {
   const connectProvider = async (provider) => {
     setConnecting(provider);
     const providerPath = provider === 'google' ? 'google' : 'microsoft';
-    const redirect_uri = `${window.location.origin}/oauth/${providerPath}`;
+    const redirect_uri = `https://cherubic-mail-mind-flow.base44.app/oauth/${providerPath}`;
 
     try {
       const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri, user_id: currentUser?.id });
