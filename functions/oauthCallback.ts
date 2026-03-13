@@ -34,13 +34,16 @@ Deno.serve(async (req) => {
   }
 
   if (provider === 'microsoft') {
+    const msClientId = Deno.env.get('MICROSOFT_CLIENT_ID')?.trim();
+    const msClientSecret = Deno.env.get('MICROSOFT_CLIENT_SECRET')?.trim();
+    console.log('Microsoft token request - redirect_uri:', redirect_uri, 'client_id length:', msClientId?.length, 'secret length:', msClientSecret?.length);
     tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
-        client_id: Deno.env.get('MICROSOFT_CLIENT_ID')?.trim(),
-        client_secret: Deno.env.get('MICROSOFT_CLIENT_SECRET')?.trim(),
+        client_id: msClientId,
+        client_secret: msClientSecret,
         redirect_uri,
         grant_type: 'authorization_code',
         scope: 'openid email offline_access https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send',
