@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ChevronDown, Check, Trash2, Info, Loader2 } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/lib/AuthContext';
 
 const faqs = [
   'Cosa succede se ho già un sistema di etichette email?',
