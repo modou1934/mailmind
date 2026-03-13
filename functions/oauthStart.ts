@@ -7,7 +7,7 @@ Deno.serve(async (req) => {
 
   if (provider === 'google') {
     const params = new URLSearchParams({
-      client_id: Deno.env.get('GOOGLE_CLIENT_ID'),
+      client_id: Deno.env.get('GOOGLE_CLIENT_ID')?.trim(),
       redirect_uri,
       response_type: 'code',
       scope: 'openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/gmail.send',
@@ -20,7 +20,7 @@ Deno.serve(async (req) => {
 
   if (provider === 'microsoft') {
     const params = new URLSearchParams({
-      client_id: Deno.env.get('MICROSOFT_CLIENT_ID'),
+      client_id: Deno.env.get('MICROSOFT_CLIENT_ID')?.trim(),
       redirect_uri,
       response_type: 'code',
       scope: 'openid email offline_access https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send',
