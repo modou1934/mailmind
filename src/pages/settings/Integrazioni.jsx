@@ -20,6 +20,7 @@ export default function Integrazioni() {
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(null);
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const loadAccounts = async () => {
     setLoading(true);
