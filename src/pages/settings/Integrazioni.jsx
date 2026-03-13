@@ -38,7 +38,7 @@ export default function Integrazioni() {
     }
   };
 
-  useEffect(() => { loadAccounts(); }, []);
+  useEffect(() => { if (currentUser) loadAccounts(); }, [currentUser]);
 
   const connectProvider = async (provider) => {
     setConnecting(provider);
