@@ -21,6 +21,7 @@ import Organizzazione from './pages/settings/Organizzazione';
 import Persone from './pages/settings/Persone';
 import Fatturazione from './pages/settings/Fatturazione';
 import Integrazioni from './pages/settings/Integrazioni';
+import OAuthCallback from './pages/OAuthCallback';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
