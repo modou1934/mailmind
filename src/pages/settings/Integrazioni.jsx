@@ -20,7 +20,11 @@ export default function Integrazioni() {
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(null);
   const { toast } = useToast();
-  const { user } = useAuth();
+  const [currentUser, setCurrentUser] = useState(null);
+
+  useEffect(() => {
+    base44.auth.me().then(u => setCurrentUser(u)).catch(() => {});
+  }, []);
 
   const loadAccounts = async () => {
     setLoading(true);
