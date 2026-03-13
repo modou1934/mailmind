@@ -47,7 +47,8 @@ Deno.serve(async (req) => {
       }),
     });
     tokenData = await tokenRes.json();
-    if (tokenData.error) return Response.json({ error: tokenData.error_description }, { status: 400 });
+    console.log('Microsoft token response:', JSON.stringify(tokenData));
+    if (tokenData.error) return Response.json({ error: `${tokenData.error}: ${tokenData.error_description}` }, { status: 400 });
 
     accessToken = tokenData.access_token;
     refreshToken = tokenData.refresh_token;
