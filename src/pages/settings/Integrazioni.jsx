@@ -29,7 +29,7 @@ export default function Integrazioni() {
   const loadAccounts = async () => {
     setLoading(true);
     try {
-      const res = await base44.functions.invoke('getConnectedAccounts', { user_id: user?.id });
+      const res = await base44.functions.invoke('getConnectedAccounts', { user_id: currentUser?.id });
       setAccounts(res.data.accounts || []);
     } catch (e) {
       setAccounts([]);
