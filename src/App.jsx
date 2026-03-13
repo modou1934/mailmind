@@ -6,9 +6,9 @@ import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 
-// Pages
-import LandingPage from './pages/LandingPage';
-import OnboardingPage from './pages/OnboardingPage';
+// Page imports
+import Home from './pages/Home';
+import Onboarding from './pages/Onboarding';
 import AppLayout from './components/AppLayout';
 import Dashboard from './pages/Dashboard';
 import Categorizzazione from './pages/Categorizzazione';
@@ -28,7 +28,7 @@ const AuthenticatedApp = () => {
   if (isLoadingPublicSettings || isLoadingAuth) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-gray-200 border-t-brand rounded-full animate-spin"></div>
+        <div className="w-8 h-8 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin"></div>
       </div>
     );
   }
@@ -44,11 +44,11 @@ const AuthenticatedApp = () => {
 
   return (
     <Routes>
-      {/* Public */}
-      <Route path="/" element={<LandingPage />} />
-      <Route path="/onboarding" element={<OnboardingPage />} />
-
-      {/* App */}
+      <Route path="/" element={<Navigate to="/Home" replace />} />
+      <Route path="/Home" element={<Home />} />
+      <Route path="/onboarding" element={<Onboarding />} />
+      
+      {/* App routes with layout */}
       <Route element={<AppLayout />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/categorizzazione" element={<Categorizzazione />} />
@@ -56,7 +56,6 @@ const AuthenticatedApp = () => {
         <Route path="/notetaker" element={<Notetaker />} />
         <Route path="/pianificazione" element={<Pianificazione />} />
         <Route path="/chat" element={<Chat />} />
-
         <Route path="/impostazioni" element={<Impostazioni />}>
           <Route path="organizzazione" element={<Organizzazione />} />
           <Route path="persone" element={<Persone />} />
@@ -83,4 +82,4 @@ function App() {
   )
 }
 
-export default App;
+export default App
