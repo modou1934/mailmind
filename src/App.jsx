@@ -65,6 +65,8 @@ const AuthenticatedApp = () => {
         </Route>
       </Route>
 
+      <Route path="/oauth/google" element={<OAuthCallback />} />
+      <Route path="/oauth/microsoft" element={<OAuthCallback />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
