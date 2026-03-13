@@ -27,7 +27,7 @@ export default function OAuthCallback() {
     // Detect provider from URL path
     const path = window.location.pathname;
     const provider = path.includes('microsoft') ? 'microsoft' : 'google';
-    const redirect_uri = `${window.location.origin}${window.location.pathname}`;
+    const redirect_uri = `https://cherubic-mail-mind-flow.base44.app${window.location.pathname}`;
 
     base44.functions.invoke('oauthCallback', { code, provider, redirect_uri, state })
       .then(res => {
