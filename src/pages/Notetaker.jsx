@@ -1,54 +1,76 @@
 import { useState } from 'react';
-import { Settings, ChevronDown, X, Mic, Video, Upload } from 'lucide-react';
+import { X, ChevronDown } from 'lucide-react';
 
 const Toggle = ({ checked, onChange }) => (
   <button
     onClick={() => onChange(!checked)}
-    className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}
+    className={`relative rounded-full transition-colors flex-shrink-0 ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}
+    style={{ height: '22px', width: '40px' }}
   >
-    <div className={`w-4 h-4 rounded-full bg-white shadow absolute top-1 transition-all ${checked ? 'left-5' : 'left-1'}`} />
+    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
   </button>
 );
 
 export default function Notetaker() {
-  const [showRecordDropdown, setShowRecordDropdown] = useState(false);
-  const [showRecordModal, setShowRecordModal] = useState(false);
-  const [showVideoModal, setShowVideoModal] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [recordModal, setRecordModal] = useState(false);
+  const [joinModal, setJoinModal] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState('general');
-  const [autoJoin, setAutoJoin] = useState('all');
-  const [ntSettings, setNtSettings] = useState({
-    sendFailure: true, hideImage: true, sendPrereads: true, turnOffSharing: false,
+  const [meetingUrl, setMeetingUrl] = useState('');
+  const [recordDropdown, setRecordDropdown] = useState(false);
+
+  const [settings, setSettings] = useState({
+    autoJoin: 'all',
+    language: 'it',
+    sendFailureEmails: true,
+    hideNotetakerImage: true,
+    recordingRetention: 'manual',
+    sendPrereads: true,
+    disablePrereadSharing: false,
   });
-  const [videoUrl, setVideoUrl] = useState('');
 
   return (
-    <div className="h-full overflow-auto bg-gray-50">
-      <div className="flex items-center justify-between px-8 py-4 bg-white border-b border-gray-100">
-        <h1 className="text-lg font-bold text-gray-900">Notetaker</h1>
+    <div className="h-full overflow-auto">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
+        <h1 className="text-base font-semibold text-gray-900">Notetaker</h1>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowSettings(true)} className="p-2 hover:bg-gray-100 rounded-lg">
-            <Settings className="w-4 h-4 text-gray-500" />
+          <button
+            onClick={() => setSettingsPanel(true)}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
           </button>
           <div className="relative">
             <button
-              onClick={() => setShowRecordDropdown(!showRecordDropdown)}
-              className="flex items-center gap-2 bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-brand/90"
+              onClick={() => setRecordDropdown(!recordDropdown)}
+              className="flex items-center gap-1.5 bg-brand text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand/90 transition-colors"
             >
-              Registra riunione <ChevronDown className="w-4 h-4" />
+              Registra riunione <ChevronDown className="w-3.5 h-3.5" />
             </button>
-            {showRecordDropdown && (
+            {recordDropdown && (
               <>
-                <div className="fixed inset-0 z-30" onClick={() => setShowRecordDropdown(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-100 rounded-xl shadow-xl z-40 min-w-48 overflow-hidden">
-                  <button onClick={() => { setShowRecordDropdown(false); setShowRecordModal(true); }} className="flex items-center gap-2 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 w-full">
-                    <Mic className="w-4 h-4 text-gray-400" /> Inizia a registrare ora
+                <div className="fixed inset-0 z-10" onClick={() => setRecordDropdown(false)} />
+                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-20 py-1 w-48">
+                  <button
+                    onClick={() => { setRecordModal(true); setRecordDropdown(false); }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    🎙️ Inizia a registrare
                   </button>
-                  <button onClick={() => { setShowRecordDropdown(false); setShowVideoModal(true); }} className="flex items-center gap-2 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 w-full">
-                    <Video className="w-4 h-4 text-gray-400" /> Invita alla riunione
+                  <button
+                    onClick={() => { setJoinModal(true); setRecordDropdown(false); }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    👤 Invita alla riunione
                   </button>
-                  <button className="flex items-center gap-2 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 w-full">
-                    <Upload className="w-4 h-4 text-gray-400" /> Carica registrazione
+                  <button
+                    onClick={() => setRecordDropdown(false)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    📤 Carica registrazione
                   </button>
                 </div>
               </>
@@ -57,237 +79,293 @@ export default function Notetaker() {
         </div>
       </div>
 
-      <div className="px-8 py-12 max-w-4xl">
-        <p className="text-center text-sm font-medium text-brand mb-2">Incontra il tuo nuovo AI Notetaker</p>
-        <h2 className="text-3xl font-black text-gray-900 text-center mb-10">Non scrivere mai più note di riunione</h2>
+      <div className="p-6 max-w-3xl">
+        <div className="text-center mb-8">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Conosci il tuo nuovo AI Notetaker</div>
+          <h2 className="text-2xl font-black text-gray-900">Non prendere più note nelle riunioni</h2>
+        </div>
 
-        <div className="grid md:grid-cols-2 gap-4 mb-12">
-          <div onClick={() => setShowRecordModal(true)} className="bg-white border border-gray-100 rounded-2xl p-6 cursor-pointer hover:shadow-md transition-shadow">
-            <div className="bg-[#f5f0e8] rounded-xl p-4 mb-4 flex items-center justify-center h-32">
-              <div className="text-center">
-                <div className="flex items-center gap-2 justify-center mb-2">
-                  <div className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
-                  <span className="text-xs text-gray-500">00:24</span>
-                  <span className="text-xs border border-gray-300 px-2 py-0.5 rounded text-gray-500">Stop</span>
-                </div>
-                <div className="flex items-end justify-center gap-0.5 h-8">
-                  {Array.from({ length: 16 }).map((_, i) => (
-                    <div key={i} className="w-1 bg-red-300 rounded-full" style={{ height: `${20 + Math.sin(i * 0.7) * 15}px` }} />
-                  ))}
-                </div>
-                <div className="text-xs text-gray-400 mt-2">Ciao mondo</div>
+        <div className="grid grid-cols-2 gap-5 mb-10">
+          <div
+            className="bg-cream rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-gray-300 transition-colors"
+            onClick={() => setRecordModal(true)}
+          >
+            <div className="bg-white rounded-lg border border-gray-100 p-4 mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-3 h-3 rounded-full bg-red-400 animate-pulse" />
+                <span className="text-xs font-mono text-gray-500">00:24</span>
+                <div className="ml-auto bg-gray-100 rounded px-2 py-0.5 text-xs text-gray-600">Stop</div>
               </div>
+              <div className="h-8 flex items-center gap-0.5">
+                {Array.from({ length: 20 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-1 rounded-full bg-red-300"
+                    style={{ height: `${Math.random() * 24 + 4}px` }}
+                  />
+                ))}
+              </div>
+              <div className="text-xs text-gray-400 mt-2">Ciao a tutti, oggi discutiamo...</div>
             </div>
-            <h3 className="font-bold text-gray-900 mb-1">Registra riunioni in presenza</h3>
-            <p className="text-xs text-brand mb-3">Clicca. Parla. Registra. Fatto. Trascritti e riassunti istantanei.</p>
-            <button className="text-sm font-medium text-gray-700 flex items-center gap-1">Inizia →</button>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">Registra riunioni in presenza</h3>
+            <p className="text-xs text-brand mb-2">Clicca, parla, registra. Trascrizioni e sintesi istantanee.</p>
+            <button className="text-xs font-semibold text-gray-700 flex items-center gap-1">
+              Inizia →
+            </button>
           </div>
 
-          <div onClick={() => setShowVideoModal(true)} className="bg-white border border-gray-100 rounded-2xl p-6 cursor-pointer hover:shadow-md transition-shadow">
-            <div className="bg-[#f5f0e8] rounded-xl mb-4 h-32 overflow-hidden relative">
-              <img src="https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=400&q=80" className="w-full h-full object-cover" alt="" />
-              <div className="absolute top-2 right-2 bg-white rounded-lg px-2 py-1 shadow text-xs font-bold text-brand">M</div>
+          <div
+            className="bg-cream rounded-xl border border-gray-200 p-5 cursor-pointer hover:border-gray-300 transition-colors"
+            onClick={() => setJoinModal(true)}
+          >
+            <div className="bg-white rounded-lg border border-gray-100 p-4 mb-4">
+              <div className="relative">
+                <div className="w-full h-20 bg-gray-800 rounded-lg" />
+                <div className="absolute -top-1 -right-1 w-8 h-8 bg-brand rounded-full flex items-center justify-center text-white text-xs font-black">M</div>
+                <div className="absolute top-2 right-2 bg-white rounded text-[9px] px-1.5 py-0.5 text-gray-700 font-medium leading-tight max-w-[100px]">
+                  MailMind sta prendendo note...
+                </div>
+              </div>
             </div>
-            <h3 className="font-bold text-gray-900 mb-1">Unisciti alle videochiamate</h3>
-            <p className="text-xs text-brand mb-3">Lascia che MailMind AI si unisca alle tue riunioni per trascritti e riassunti istantanei.</p>
-            <button className="text-sm font-medium text-gray-700 flex items-center gap-1">Inizia →</button>
+            <h3 className="text-sm font-semibold text-gray-900 mb-1">Partecipa a videochiamate</h3>
+            <p className="text-xs text-brand mb-2">Lascia che MailMind AI partecipi alle tue riunioni per trascrizioni e sintesi istantanee.</p>
+            <button className="text-xs font-semibold text-gray-700 flex items-center gap-1">
+              Inizia →
+            </button>
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-12 text-sm text-brand">
-          <div className="flex flex-col items-center gap-1">
-            <Mic className="w-5 h-5" />
-            <span>Registra e riassumi riunioni</span>
-          </div>
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-xl">💬</span>
-            <span>Trova risposte con <span className="font-bold">Chat</span></span>
-          </div>
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-xl">📧</span>
-            <span>Follow-up automatici</span>
-          </div>
+        <div className="flex justify-around border-t border-gray-200 pt-6">
+          {[
+            { icon: '🎙️', label: 'Registra e sintetizza le riunioni' },
+            { icon: '💬', label: 'Trova risposte istantaneamente con Chat' },
+            { icon: '📧', label: 'Follow-up automatici' },
+          ].map(item => (
+            <div key={item.label} className="text-center max-w-[120px]">
+              <div className="text-xl mb-1">{item.icon}</div>
+              <div className="text-xs text-brand font-medium">{item.label}</div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Record Modal */}
-      {showRecordModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full mx-4">
+      {/* Record modal */}
+      {recordModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <h3 className="font-bold text-gray-900">Inizia a registrare ora</h3>
-                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">Beta</span>
+                <h3 className="font-semibold text-gray-900">Inizia a registrare</h3>
+                <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-2 py-0.5 font-medium">Beta</span>
               </div>
-              <button onClick={() => setShowRecordModal(false)}><X className="w-4 h-4 text-gray-400" /></button>
+              <button onClick={() => setRecordModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-sm text-gray-500 mb-4">MailMind AI userà il microfono del tuo dispositivo per registrare la tua riunione per un massimo di 2 ore.</p>
-            <div className="space-y-3">
+            <p className="text-xs text-gray-500 mb-4">MailMind AI userà il microfono del tuo dispositivo per registrare la riunione fino a 2 ore. Sintesi e trascrizione saranno generate al termine.</p>
+            <div className="space-y-3 mb-5">
               <div>
-                <div className="text-xs text-gray-500 mb-1 border border-gray-200 px-2 py-0.5 rounded inline-block">Link all'evento (opzionale)</div>
-                <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1">
-                  <option>Nuova riunione</option>
-                </select>
+                <label className="text-xs text-gray-500 mb-1 block">Collega a evento (opzionale)</label>
+                <div className="relative">
+                  <select className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white appearance-none focus:outline-none">
+                    <option>Nuova riunione</option>
+                  </select>
+                </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500 mb-1">Titolo riunione (opzionale)</div>
-                <input type="text" placeholder="Inserisci titolo riunione..." className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm" />
+                <label className="text-xs text-gray-500 mb-1 block">Titolo riunione (opzionale)</label>
+                <input type="text" placeholder="Inserisci il titolo..." className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none" />
               </div>
               <div>
-                <div className="text-xs text-gray-500 mb-1">Microfono predefinito</div>
-                <div className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-400">Pronto per registrare</div>
-              </div>
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <div className="text-sm font-medium text-red-600">Accesso al microfono richiesto</div>
-                <div className="text-xs text-red-500">Consenti l'accesso al microfono nelle impostazioni del browser per registrare.</div>
+                <label className="text-xs text-gray-500 mb-1 block">Microfono predefinito</label>
+                <div className="flex items-center gap-2 border border-gray-200 rounded-lg px-3 py-2.5">
+                  <span className="text-gray-400">🎙️</span>
+                  <span className="text-sm text-gray-500">Pronto per registrare</span>
+                </div>
               </div>
             </div>
-            <div className="flex justify-end mt-4">
-              <button disabled className="bg-gray-200 text-gray-400 px-4 py-2 rounded-lg text-sm font-medium cursor-not-allowed">Inizia Registrazione</button>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+              <div className="text-xs font-semibold text-red-700 mb-0.5">Accesso al microfono richiesto</div>
+              <div className="text-xs text-red-600">Consenti l'accesso al microfono nelle impostazioni del browser per registrare.</div>
             </div>
+            <button className="w-full bg-gray-200 text-gray-400 py-3 rounded-xl font-semibold text-sm cursor-not-allowed">
+              Inizia registrazione
+            </button>
           </div>
         </div>
       )}
 
-      {/* Video Modal */}
-      {showVideoModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4">
+      {/* Join video call modal */}
+      {joinModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <h3 className="font-bold text-gray-900">Aggiungi alla videochiamata</h3>
-                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">Beta</span>
+                <h3 className="font-semibold text-gray-900">Aggiungi alla videochiamata</h3>
+                <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-2 py-0.5 font-medium">Beta</span>
               </div>
-              <button onClick={() => setShowVideoModal(false)}><X className="w-4 h-4 text-gray-400" /></button>
+              <button onClick={() => setJoinModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p className="text-sm text-gray-500 mb-4">Invita il Notetaker MailMind AI alla tua riunione online per registrare e generare un riassunto e trascritto.</p>
-            <div>
-              <div className="text-xs text-gray-500 mb-1 border border-gray-200 px-2 py-0.5 rounded inline-block">URL Riunione</div>
+            <p className="text-xs text-gray-500 mb-4">Invita il Notetaker AI di MailMind alla tua riunione online per registrare e generare sintesi e trascrizioni.</p>
+            <div className="mb-4">
+              <label className="text-xs text-gray-500 mb-1 block">URL riunione</label>
               <input
                 type="url"
-                value={videoUrl}
-                onChange={e => setVideoUrl(e.target.value)}
+                value={meetingUrl}
+                onChange={e => setMeetingUrl(e.target.value)}
                 placeholder="https://zoom.us/j/..."
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 focus:border-brand outline-none"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/20"
               />
             </div>
-            <div className="flex justify-end mt-4">
-              <button className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold">Inizia registrazione</button>
-            </div>
+            <button className="w-full bg-brand text-white py-3 rounded-xl font-semibold text-sm hover:bg-brand/90 transition-colors">
+              Inizia registrazione
+            </button>
           </div>
         </div>
       )}
 
-      {/* Settings Panel */}
-      {showSettings && (
+      {/* Settings panel */}
+      {settingsPanel && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setShowSettings(false)} />
-          <div className="fixed top-0 right-0 h-full w-96 bg-white border-l border-gray-200 shadow-2xl z-50 overflow-auto">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-              <h3 className="font-bold text-gray-900">Impostazioni Notetaker</h3>
-              <button onClick={() => setShowSettings(false)}><X className="w-4 h-4 text-gray-400" /></button>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setSettingsPanel(false)} />
+          <div className="fixed top-0 right-0 h-full w-96 bg-white border-l border-gray-200 shadow-2xl z-50 flex flex-col overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 sticky top-0 bg-white">
+              <span className="font-semibold text-gray-900">Impostazioni Notetaker</span>
+              <button onClick={() => setSettingsPanel(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <div className="flex border-b border-gray-100">
+
+            <div className="flex border-b border-gray-100 px-4">
               {['general', 'prereads'].map(t => (
-                <button key={t} onClick={() => setSettingsTab(t)} className={`flex-1 py-2 text-sm font-medium ${settingsTab === t ? 'bg-gray-100 text-gray-900' : 'text-gray-500'}`}>
+                <button
+                  key={t}
+                  onClick={() => setSettingsTab(t)}
+                  className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${settingsTab === t ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500'}`}
+                >
                   {t === 'general' ? 'Generale' : 'Pre-letture'}
                 </button>
               ))}
             </div>
-            <div className="p-5 space-y-5">
-              {settingsTab === 'general' ? (
+
+            <div className="p-5 space-y-5 flex-1">
+              {settingsTab === 'general' && (
                 <>
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Unisciti automaticamente</h4>
-                    {['all', 'external', 'hosting', 'none'].map(opt => (
-                      <label key={opt} className="flex items-center gap-2 py-1.5 cursor-pointer">
-                        <input type="radio" checked={autoJoin === opt} onChange={() => setAutoJoin(opt)} className="accent-gray-900" />
-                        <span className="text-sm text-gray-700">{{ all: 'Tutte le riunioni', external: 'Solo riunioni esterne', hosting: 'Riunioni che ospito', none: 'Nessuna' }[opt]}</span>
-                      </label>
-                    ))}
-                    <p className="text-xs text-brand mt-2">MailMind AI si unirà a tutte le riunioni con un link riunione.</p>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-3">Partecipa automaticamente</h4>
+                    <div className="space-y-2">
+                      {['all', 'external', 'hosting', 'none'].map(opt => (
+                        <label key={opt} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="autoJoin"
+                            checked={settings.autoJoin === opt}
+                            onChange={() => setSettings(p => ({ ...p, autoJoin: opt }))}
+                            className="text-brand"
+                          />
+                          <span className="text-sm text-gray-700">
+                            {{ all: 'Tutte le riunioni', external: 'Solo riunioni esterne', hosting: 'Riunioni che ospito', none: 'Nessuna' }[opt]}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs text-brand mt-2">MailMind AI parteciperà a tutte le riunioni con un link.</p>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Lingua trascrizione</h4>
-                    <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-                      <option>Rilevamento Lingua Automatico</option>
-                      <option>Italiano</option>
-                      <option>English</option>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-2">Lingua trascrizione</h4>
+                    <select
+                      value={settings.language}
+                      onChange={e => setSettings(p => ({ ...p, language: e.target.value }))}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                    >
+                      <option value="auto">Rilevamento automatico lingua</option>
+                      <option value="it">Italiano</option>
+                      <option value="en">Inglese</option>
                     </select>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Parole personalizzate</h4>
-                    <p className="text-xs text-gray-500 mb-2">Migliora la precisione della trascrizione aggiungendo parole personalizzate.</p>
-                    <button className="flex items-center gap-1 text-sm text-brand font-medium">+ Aggiungi parola personalizzata</button>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-2">Parole personalizzate</h4>
+                    <p className="text-xs text-gray-500 mb-2">Migliora l'accuratezza della trascrizione aggiungendo parole personalizzate (nomi aziendali, termini tecnici, acronimi).</p>
+                    <button className="flex items-center gap-1.5 text-sm text-brand font-medium">+ Aggiungi parola</button>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Invia riepilogo riunione a</h4>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-2">Condivisione automatica registrazioni</h4>
+                    <p className="text-xs text-gray-500 mb-2">Le email aggiunte qui saranno automaticamente invitate alle tue registrazioni.</p>
+                    <button className="flex items-center gap-1.5 text-sm text-brand font-medium">+ Aggiungi email</button>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Condividi automaticamente registrazioni</h4>
-                    <button className="flex items-center gap-1 text-sm text-brand font-medium mb-4">+ Aggiungi email</button>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium text-gray-900">Invia email di errore</div>
-                        <div className="text-xs text-gray-500">Ti invieremo un'email se non riusciamo a unirci alla riunione.</div>
+                        <div className="text-xs text-gray-500">Ti invieremo un'email se non riusciamo a partecipare alla riunione.</div>
                       </div>
-                      <Toggle checked={ntSettings.sendFailure} onChange={v => setNtSettings(s => ({ ...s, sendFailure: v }))} />
+                      <Toggle checked={settings.sendFailureEmails} onChange={v => setSettings(p => ({ ...p, sendFailureEmails: v }))} />
                     </div>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Aspetto Notetaker</h4>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-3">Aspetto Notetaker</h4>
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-medium text-gray-900">Nascondi immagine notetaker nelle riunioni</div>
-                        <div className="text-xs text-gray-500">Il notetaker apparirà senza avatar.</div>
+                        <div className="text-xs text-gray-500">Il notetaker apparirà senza avatar o immagine del profilo</div>
                       </div>
-                      <Toggle checked={ntSettings.hideImage} onChange={v => setNtSettings(s => ({ ...s, hideImage: v }))} />
+                      <Toggle checked={settings.hideNotetakerImage} onChange={v => setSettings(p => ({ ...p, hideNotetakerImage: v }))} />
                     </div>
                   </div>
 
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Conservazione Registrazioni</h4>
-                    <div className="text-xs text-gray-500 mb-1">Auto-elimina registrazioni dopo</div>
-                    <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-                      <option>Mantieni fino all'eliminazione manuale</option>
-                      <option>30 giorni</option>
-                      <option>90 giorni</option>
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-2">Conservazione registrazioni</h4>
+                    <select
+                      value={settings.recordingRetention}
+                      onChange={e => setSettings(p => ({ ...p, recordingRetention: e.target.value }))}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                    >
+                      <option value="manual">Conserva fino all'eliminazione manuale</option>
+                      <option value="30">Elimina dopo 30 giorni</option>
+                      <option value="90">Elimina dopo 90 giorni</option>
                     </select>
+                    <p className="text-xs text-gray-400 mt-1">Lascia "Conserva fino all'eliminazione manuale" per conservare le registrazioni indefinitamente.</p>
                   </div>
                 </>
-              ) : (
+              )}
+
+              {settingsTab === 'prereads' && (
                 <>
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Email pre-lettura</h4>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">Invia email pre-lettura</div>
-                        <div className="text-xs text-gray-500">MailMind AI creerà pre-letture riunione 15 minuti prima delle riunioni ricorrenti.</div>
-                      </div>
-                      <Toggle checked={ntSettings.sendPrereads} onChange={v => setNtSettings(s => ({ ...s, sendPrereads: v }))} />
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-3">Email di pre-lettura</h4>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium text-gray-900">Invia email di pre-lettura</div>
+                      <Toggle checked={settings.sendPrereads} onChange={v => setSettings(p => ({ ...p, sendPrereads: v }))} />
                     </div>
+                    <p className="text-xs text-gray-500">MailMind AI creerà pre-letture 15 minuti prima delle riunioni ricorrenti già registrate in precedenza.</p>
                   </div>
-                  <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-3 bg-[#f5f0e8] -mx-5 px-5 py-2">Condivisione pre-lettura</h4>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm font-medium text-gray-900">Disattiva condivisione pre-lettura</div>
-                        <div className="text-xs text-brand">Impedisce a MailMind AI di mettere in CC i colleghi nelle email pre-lettura.</div>
-                      </div>
-                      <Toggle checked={ntSettings.turnOffSharing} onChange={v => setNtSettings(s => ({ ...s, turnOffSharing: v }))} />
+                  <div className="bg-cream rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-semibold text-gray-900 mb-3">Condivisione pre-lettura</h4>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium text-gray-900">Disabilita condivisione pre-lettura</div>
+                      <Toggle checked={settings.disablePrereadSharing} onChange={v => setSettings(p => ({ ...p, disablePrereadSharing: v }))} />
                     </div>
+                    <p className="text-xs text-gray-500">Impedisce a MailMind AI di mettere in CC i colleghi idonei sulle email di pre-lettura.</p>
                   </div>
                 </>
               )}
             </div>
-            <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
-              <button onClick={() => setShowSettings(false)} className="text-sm text-gray-500 hover:text-gray-700">Annulla</button>
-              <button className="text-sm text-gray-400 cursor-not-allowed">Aggiorna preferenze</button>
+
+            <div className="flex justify-between px-5 py-4 border-t border-gray-100 sticky bottom-0 bg-white">
+              <button onClick={() => setSettingsPanel(false)} className="text-sm text-gray-500 hover:text-gray-700">Annulla</button>
+              <button
+                onClick={() => setSettingsPanel(false)}
+                className="bg-brand/10 text-brand text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-brand/20 transition-colors"
+              >
+                Aggiorna preferenze
+              </button>
             </div>
           </div>
         </>
