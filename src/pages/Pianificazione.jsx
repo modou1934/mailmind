@@ -1,267 +1,206 @@
 import { useState } from 'react';
-import { X, Copy, ChevronRight } from 'lucide-react';
+import { X, Copy, ArrowRight, Check } from 'lucide-react';
 
 const Toggle = ({ checked, onChange }) => (
-  <button
-    onClick={() => onChange(!checked)}
-    className={`relative rounded-full transition-colors flex-shrink-0 ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}
-    style={{ height: '22px', width: '40px' }}
-  >
-    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-5' : 'translate-x-0.5'}`} />
+  <button onClick={() => onChange(!checked)} className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}>
+    <div className={`w-4 h-4 rounded-full bg-white shadow absolute top-1 transition-all ${checked ? 'left-5' : 'left-1'}`} />
   </button>
 );
 
-const days = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'];
 const hours = ['1AM','2AM','3AM','4AM','5AM','6AM','7AM','8AM','9AM','10AM','11AM','12PM','1PM','2PM','3PM','4PM','5PM','6PM','7PM','8PM','9PM','10PM','11PM'];
+const days = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
 
 export default function Pianificazione() {
   const [tab, setTab] = useState('links');
-  const [showClaimModal, setShowClaimModal] = useState(false);
-  const [showReadyModal, setShowReadyModal] = useState(false);
-  const [schedulingLink, setSchedulingLink] = useState('mailmind.ai/m/utente');
-  const [settings, setSettings] = useState({
-    includeSchedulingLink: true,
-    generateDraftsForTimes: true,
-    confirmationEmail: true,
-  });
+  const [showModal, setShowModal] = useState(null);
+  const [link, setLink] = useState('mailmind.ai/e/utente');
+  const [settings, setSettings] = useState({ includeLink: true, generateDrafts: true, confirmation: true });
 
-  const availability = {
-    Lun: { active: true, times: ['10AM', '11AM', '12PM', '1PM', '3PM', '4PM', '5PM'] },
-    Mar: { active: true, times: ['10AM', '11AM', '12PM', '1PM', '3PM', '4PM', '5PM'] },
-    Mer: { active: true, times: ['10AM', '11AM', '12PM', '1PM', '3PM', '4PM', '5PM'] },
-    Gio: { active: true, times: ['10AM', '11AM', '12PM', '1PM', '3PM', '4PM', '5PM'] },
-    Ven: { active: true, times: ['10AM', '11AM', '12PM', '1PM', '3PM', '4PM', '5PM'] },
-    Sab: { active: false, times: [] },
-    Dom: { active: false, times: [] },
-  };
+  const availableHours = { 0: [9,10,11,12,14,15,16], 1: [9,10,11,12,14,15,16], 2: [9,10,11,12,14,15,16], 3: [9,10,11,12,14,15,16], 4: [9,10,11,12,14,15,16] };
 
   return (
-    <div className="h-full overflow-auto">
-      <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
-        <h1 className="text-base font-semibold text-gray-900">Pianificazione</h1>
-        <button className="text-sm text-gray-500 hover:text-gray-900 font-medium transition-colors">
-          Aggiorna preferenze
-        </button>
+    <div className="h-full overflow-auto bg-gray-50">
+      <div className="flex items-center justify-between px-8 py-4 bg-white border-b border-gray-100">
+        <h1 className="text-lg font-bold text-gray-900">Pianificazione</h1>
+        <button className="text-sm text-brand font-medium hover:underline">Aggiorna preferenze</button>
       </div>
 
-      <div className="px-6 pt-5">
-        <div className="flex gap-2 border-b border-gray-200 mb-6">
+      <div className="px-8 py-6 max-w-4xl">
+        <div className="flex gap-1 mb-6 border-b border-gray-100">
           {['links', 'drafts', 'availability'].map(t => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                tab === t ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              {{ links: 'Link', drafts: 'Bozze', availability: 'Disponibilità' }[t]}
+            <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+              {t === 'links' ? 'Link' : t === 'drafts' ? 'Bozze' : 'Disponibilità'}
             </button>
           ))}
         </div>
 
         {tab === 'links' && (
-          <div className="max-w-4xl">
-            {/* Stats */}
+          <div>
+            <div className="bg-[#f5f0e8] rounded-xl px-4 py-2 text-xs text-gray-500 mb-4">Ultimi 30 giorni</div>
             <div className="grid grid-cols-3 gap-4 mb-6">
-              {[
-                { label: 'Riunioni prenotate', value: '0' },
-                { label: 'Partecipanti medi', value: '0.0' },
-                { label: 'Durata media', value: '0m' },
-              ].map(s => (
-                <div key={s.label} className="bg-cream rounded-xl border border-gray-200 p-4">
-                  <div className="text-xs text-gray-500 mb-1">Ultimi 30 giorni</div>
-                  <div className="text-xs text-gray-400 mb-1">{s.label}</div>
+              {[{ label: 'Riunioni prenotate', value: '0' }, { label: 'Partecipanti medi', value: '0.0' }, { label: 'Durata media', value: '0m' }].map(s => (
+                <div key={s.label} className="bg-white rounded-xl border border-gray-100 p-4">
+                  <div className="text-sm text-gray-500 mb-1">{s.label}</div>
                   <div className="text-2xl font-bold text-gray-900">{s.value}</div>
                 </div>
               ))}
             </div>
 
-            {/* Scheduling link */}
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-900 mb-1">Condividi il tuo link di pianificazione</h3>
-                <p className="text-xs text-gray-500 mb-3">
-                  MailMind AI usa questo link quando qualcuno chiede la tua disponibilità.{' '}
-                  <a href="#" className="text-brand underline">Puoi condividerlo</a> per far prenotare direttamente.
-                </p>
-              </div>
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5 text-xs text-gray-600 truncate">
-                    https://app.mailmind.ai/m/utente/30
+            <div className="bg-white rounded-xl border border-gray-100 p-5 mb-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <h3 className="font-semibold text-gray-900 mb-1">Condividi il tuo link di pianificazione</h3>
+                  <p className="text-sm text-gray-500">MailMind AI usa il link qui sotto quando qualcuno chiede quando sei disponibile. Puoi anche condividere questo link direttamente.</p>
+                </div>
+                <div className="flex-shrink-0 w-72">
+                  <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden mb-2">
+                    <input readOnly value="https://mailmind.ai/e/utente/30" className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
+                    <button className="flex items-center gap-1 bg-brand text-white px-2 py-2 text-xs font-medium whitespace-nowrap">
+                      <Copy className="w-3 h-3" /> Copia link
+                    </button>
                   </div>
-                  <button
-                    onClick={() => setShowClaimModal(true)}
-                    className="flex items-center gap-1.5 bg-brand text-white px-3 py-2.5 rounded-lg text-xs font-semibold hover:bg-brand/90 whitespace-nowrap"
-                  >
-                    <Copy className="w-3 h-3" /> Copia link
+                  <button onClick={() => setShowModal('link')} className="flex items-center gap-1 text-sm text-brand hover:underline">
+                    Aggiorna impostazioni <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <button className="text-xs text-brand font-semibold flex items-center gap-1 hover:underline">
-                  Aggiorna impostazioni riunione <ChevronRight className="w-3 h-3" />
-                </button>
               </div>
             </div>
 
-            {/* Feature cards */}
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-cream rounded-xl border border-gray-200 p-5">
-                <div className="h-20 bg-gradient-to-r from-purple-400 to-pink-400 rounded-lg mb-3" />
-                <h3 className="text-sm font-semibold text-gray-900 mb-1">Ottimizza il tuo workflow di pianificazione</h3>
-                <p className="text-xs text-gray-500 mb-2">Scopri come MailMind AI usa algoritmi intelligenti per suggerire orari ottimali.</p>
-                <button className="text-xs text-brand font-semibold flex items-center gap-1">
-                  Scopri di più <ChevronRight className="w-3 h-3" />
-                </button>
+              <div className="bg-white rounded-xl border border-gray-100 p-5">
+                <div className="h-24 bg-[#f5f0e8] rounded-lg mb-3 flex items-center justify-center text-3xl">📅</div>
+                <h3 className="font-semibold text-gray-900 mb-1">Ottimizza il tuo workflow di pianificazione</h3>
+                <p className="text-xs text-gray-500 mb-2">Scopri come MailMind AI usa algoritmi intelligenti per suggerire orari ottimali per le riunioni.</p>
+                <button className="flex items-center gap-1 text-sm text-brand font-medium">Scopri di più <ArrowRight className="w-3.5 h-3.5" /></button>
               </div>
-              <div className="bg-cream rounded-xl border border-gray-200 p-5">
-                <div className="h-20 bg-gradient-to-r from-blue-400 to-cyan-400 rounded-lg mb-3" />
-                <h3 className="text-sm font-semibold text-gray-900 mb-1">Pianificazione team</h3>
-                <p className="text-xs text-gray-500 mb-2">Sfoglia la disponibilità del team e prenota riunioni con più partecipanti in una volta sola.</p>
-                <button className="text-xs text-brand font-semibold flex items-center gap-1">
-                  Gestisci team <ChevronRight className="w-3 h-3" />
-                </button>
+              <div className="bg-white rounded-xl border border-gray-100 p-5">
+                <div className="h-24 bg-[#f5f0e8] rounded-lg mb-3 flex items-center justify-center text-3xl">👥</div>
+                <h3 className="font-semibold text-gray-900 mb-1">Pianificazione team</h3>
+                <p className="text-xs text-gray-500 mb-2">Sfoglia la disponibilità del team e prenota riunioni con più partecipanti contemporaneamente.</p>
+                <button className="flex items-center gap-1 text-sm text-brand font-medium">Gestisci team <ArrowRight className="w-3.5 h-3.5" /></button>
               </div>
             </div>
           </div>
         )}
 
         {tab === 'drafts' && (
-          <div className="max-w-2xl space-y-4">
-            <div className="bg-cream rounded-xl border border-gray-200 p-5">
-              <h3 className="text-xs font-semibold text-gray-900 mb-4">Come MailMind AI risponde alle richieste di riunione</h3>
-              <div className="space-y-4">
-                {[
-                  { key: 'includeSchedulingLink', label: 'Includi link di pianificazione nelle bozze', desc: 'MailMind AI includerà il tuo link di pianificazione nelle risposte quando viene rilevata una richiesta di riunione.' },
-                  { key: 'generateDraftsForTimes', label: 'Genera bozze per orari proposti', desc: 'MailMind AI genererà bozze quando qualcuno propone orari per una riunione.' },
-                  { key: 'confirmationEmail', label: 'Email di conferma dopo proposta', desc: 'Riceverai un\'email quando qualcuno accetta un orario proposto.' },
-                ].map(item => (
-                  <div key={item.key} className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-gray-900">{item.label}</div>
-                      <div className="text-xs text-brand mt-0.5">{item.desc}</div>
-                    </div>
-                    <Toggle checked={settings[item.key]} onChange={v => setSettings(p => ({ ...p, [item.key]: v }))} />
+          <div className="max-w-lg space-y-4">
+            <div className="bg-white rounded-xl border border-gray-100 p-5">
+              <h3 className="font-semibold text-gray-900 mb-4">Come MailMind AI risponde alle richieste di riunione</h3>
+              {[
+                { key: 'includeLink', label: 'Includi link di pianificazione nelle bozze', desc: 'MailMind AI includerà il tuo link di pianificazione nelle risposte in bozza quando viene rilevata una richiesta di riunione.' },
+                { key: 'generateDrafts', label: 'Genera bozze per orari proposti', desc: 'MailMind AI genererà bozze quando qualcuno propone orari per riunioni.' },
+                { key: 'confirmation', label: 'Email di conferma dopo proposta', desc: 'Riceverai un\'email quando qualcuno accetta un orario di riunione proposto.' },
+              ].map(item => (
+                <div key={item.key} className="border-b border-gray-50 last:border-0 pb-4 mb-4 last:mb-0 last:pb-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-gray-900">{item.label}</span>
+                    <Toggle checked={settings[item.key]} onChange={v => setSettings(s => ({ ...s, [item.key]: v }))} />
                   </div>
-                ))}
-              </div>
+                  <p className="text-xs text-brand">{item.desc}</p>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
         {tab === 'availability' && (
-          <div className="max-w-4xl space-y-4">
-            <div className="bg-cream rounded-xl border border-gray-200 p-5">
-              <h3 className="text-sm font-semibold text-gray-900 mb-1">Quando sei disponibile per le riunioni</h3>
-              <p className="text-xs text-brand mb-4">Usato dal tuo link di pianificazione e da MailMind AI per suggerire orari nelle bozze.</p>
+          <div className="max-w-3xl space-y-4">
+            <div className="bg-white rounded-xl border border-gray-100 p-5">
+              <h3 className="font-semibold text-gray-900 mb-2">Quando sei disponibile a incontrarti</h3>
+              <p className="text-xs text-brand mb-4">Usato dal tuo link di pianificazione e da MailMind AI quando suggerisce orari nelle bozze.</p>
               <div className="mb-4">
-                <label className="text-xs text-gray-500 mb-1 block">Fuso orario</label>
-                <select className="w-full max-w-xs border border-gray-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none">
-                  <option>Ora dell'Europa Centrale (CET)</option>
-                  <option>UTC</option>
-                  <option>America/New_York</option>
+                <div className="text-xs text-gray-500 mb-1">Fuso orario</div>
+                <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                  <option>Ora dell'Europa Centrale</option>
                 </select>
               </div>
-              <div>
-                <div className="text-xs font-medium text-gray-600 mb-2">Orari settimanali</div>
-                <p className="text-xs text-gray-400 mb-3">Trascina su un giorno per impostare la tua disponibilità. Clicca la X per rimuovere.</p>
-                <div className="overflow-auto">
-                  <table className="w-full text-xs border-collapse">
-                    <thead>
-                      <tr>
-                        <td className="w-12 py-1" />
-                        {days.map(d => (
-                          <th key={d} className={`text-center py-1 font-medium px-1 ${availability[d]?.active ? 'text-gray-700' : 'text-gray-300'}`}>
-                            {d}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {hours.map(hour => (
-                        <tr key={hour}>
-                          <td className="text-gray-400 pr-2 py-px text-right">{hour}</td>
-                          {days.map(d => {
-                            const isAvailable = availability[d]?.active && availability[d].times.includes(hour);
-                            const isMidDay = hour === '1PM';
-                            return (
-                              <td key={d} className="px-0.5 py-px">
-                                <div className={`h-5 rounded-sm cursor-pointer transition-colors ${
-                                  isAvailable
-                                    ? isMidDay
-                                      ? 'bg-red-200 flex items-center justify-center'
-                                      : 'bg-red-300'
-                                    : 'hover:bg-gray-100'
-                                }`}>
-                                  {isAvailable && isMidDay && <span className="text-white text-[9px]">×</span>}
-                                </div>
-                              </td>
-                            );
-                          })}
-                        </tr>
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">Ore settimanali</h4>
+              <p className="text-xs text-gray-400 mb-3">Trascina un giorno per impostare quando sei tipicamente disponibile. Clicca la X per rimuovere.</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr>
+                      <td className="w-12" />
+                      {days.map(d => (
+                        <th key={d} className={`text-center py-1 font-semibold ${d === 'Ven' ? 'text-brand' : 'text-gray-500'}`}>{d}</th>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {hours.map((h, hi) => (
+                      <tr key={h} className="border-t border-gray-50">
+                        <td className="text-gray-400 text-right pr-2 py-0.5 w-12">{h}</td>
+                        {days.map((d, di) => {
+                          const isAvail = di < 5 && availableHours[di]?.includes(hi);
+                          return (
+                            <td key={d} className={`py-0.5 px-0.5 text-center ${isAvail ? 'bg-red-200' : ''}`}>
+                              {isAvail && hi === 13 && <span className="text-gray-500">×</span>}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex gap-2 mt-2">
+                {days.slice(0,5).map(d => (
+                  <div key={d} className="flex-1 text-center text-xs text-brand">9:00 - 17:00</div>
+                ))}
+                <div className="flex-1" />
+                <div className="flex-1" />
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Claim link modal */}
-      {showClaimModal && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
+      {/* Link modal */}
+      {showModal === 'link' && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-gray-900">Personalizza il tuo link</h3>
-              <button onClick={() => setShowClaimModal(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
+              <h3 className="font-bold text-gray-900">Rivendica il tuo link personale</h3>
+              <button onClick={() => setShowModal(null)}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
-            <p className="text-sm text-gray-500 mb-4">Un link per far prenotare a tutti il loro tempo con te. Personalizzalo per renderlo facile da ricordare.</p>
-            <div className="mb-4">
-              <label className="text-xs text-gray-500 mb-1 block">Il tuo link di pianificazione</label>
-              <input
-                type="text"
-                value={schedulingLink}
-                onChange={e => setSchedulingLink(e.target.value)}
-                className="w-full border border-brand rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
-              />
-              <div className="flex justify-end mt-1">
-                <span className="text-xs text-green-500 font-medium">✓</span>
+            <p className="text-sm text-gray-500 mb-4">Un link per permettere a chiunque di pianificare del tempo con te.</p>
+            <div>
+              <div className="text-xs text-gray-500 mb-1 border border-gray-200 rounded px-2 py-0.5 inline-block">Il tuo link di pianificazione</div>
+              <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden mt-1">
+                <span className="px-3 py-2 text-sm text-gray-400 bg-gray-50">mailmind.ai/e/</span>
+                <input value={link.replace('mailmind.ai/e/', '')} onChange={e => setLink('mailmind.ai/e/' + e.target.value)} className="flex-1 px-2 py-2 text-sm outline-none" />
+                <Check className="w-4 h-4 text-green-500 mx-2" />
               </div>
             </div>
-            <div className="flex gap-3">
-              <button onClick={() => setShowClaimModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Salta</button>
-              <button onClick={() => { setShowClaimModal(false); setShowReadyModal(true); }} className="flex-1 py-2.5 bg-brand text-white rounded-xl text-sm font-semibold hover:bg-brand/90">Continua</button>
+            <div className="flex justify-end gap-3 mt-4">
+              <button onClick={() => setShowModal(null)} className="text-sm text-gray-500 px-4 py-2">Salta</button>
+              <button onClick={() => setShowModal('linkReady')} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold">Continua</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Link ready modal */}
-      {showReadyModal && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full">
+      {showModal === 'linkReady' && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-gray-900">Il tuo link è pronto</h3>
-              <button onClick={() => setShowReadyModal(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
+              <h3 className="font-bold text-gray-900">Il tuo link è pronto da condividere</h3>
+              <button onClick={() => setShowModal(null)}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
-            <p className="text-sm text-gray-500 mb-4">Aggiungilo alla tua firma email, condividilo nei messaggi, o pubblicalo su LinkedIn.</p>
-            <div className="flex items-center justify-between border border-gray-200 rounded-xl p-3 mb-4">
+            <p className="text-sm text-gray-500 mb-4">Aggiungilo alla tua firma email, condividilo nei messaggi, o postalo su LinkedIn.</p>
+            <div className="border border-gray-200 rounded-xl p-4 flex items-center justify-between">
               <div>
-                <div className="text-sm font-semibold text-gray-900">Riunione 30 Minuti</div>
-                <div className="text-xs text-gray-500">Utente MailMind</div>
+                <div className="font-semibold text-gray-900 text-sm">Riunione da 30 Minuti</div>
+                <div className="text-xs text-gray-500">Il tuo nome</div>
               </div>
-              <button className="flex items-center gap-1.5 text-brand text-sm font-semibold">
+              <button className="flex items-center gap-1.5 bg-brand text-white px-3 py-2 rounded-lg text-xs font-medium">
                 <Copy className="w-3.5 h-3.5" /> Copia link
               </button>
             </div>
-            <div className="flex gap-3">
-              <button onClick={() => setShowReadyModal(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">Indietro</button>
-              <button onClick={() => setShowReadyModal(false)} className="flex-1 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800">Fatto</button>
+            <div className="flex justify-end gap-3 mt-4">
+              <button onClick={() => setShowModal('link')} className="text-sm text-gray-500">Indietro</button>
+              <button onClick={() => setShowModal(null)} className="text-sm font-medium text-gray-900">Fatto</button>
             </div>
           </div>
         </div>
