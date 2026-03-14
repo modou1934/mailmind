@@ -106,8 +106,14 @@ export default function Onboarding() {
   const confirmCalendarSetup = async () => {
     setBusy(true);
     try {
+      const res = await base44.functions.invoke('getCalendarConnectionStatus', {});
+      if (!res.data?.connected) {
+        throw new Error('Calendario Google non collegato');
+      }
       await base44.functions.invoke('getSchedulingSettings', {});
       await advanceTo(2, { calendar_connected: true });
+    } catch (error) {
+      toast({ title: 'Calendario non disponibile', description: error.message, variant: 'destructive' });
     } finally {
       setBusy(false);
     }

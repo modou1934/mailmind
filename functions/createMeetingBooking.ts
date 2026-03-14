@@ -17,6 +17,10 @@ function dayLabelToIndex(dateString) {
   return jsDay === 0 ? 6 : jsDay - 1;
 }
 
+function getIsoDateTime(dateString, timeString) {
+  return `${dateString}T${timeString}:00`;
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -41,7 +45,8 @@ Deno.serve(async (req) => {
     const availability = await base44.asServiceRole.entities.SchedulingAvailability.filter({ user_id: profile.user_id });
     const dayIndex = dayLabelToIndex(scheduledDate);
     const duration = profile.meeting_duration_minutes || 30;
-    const matchingBlock = availability.find((block) => block.is_active !== false && block.day_of_week === dayIndex && toMinutes(startTime) >= toMinutes(block.start_time) && toMinutes(addMinutes(startTime, duration)) <= toMinutes(block.end_time));
+    const endTime = addMinutes(startTime, duration);
+    const matchingBlock = availability.find((block) => block.is_active !== false && block.day_of_week === dayIndex && toMinutes(startTime) >= toMinutes(block.start_time) && toMinutes(endTime) <= toMinutes(block.end_time));
 
     if (!matchingBlock) {
       return Response.json({ error: 'Selected time is not available' }, { status: 409 });
@@ -53,6 +58,34 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Selected time is already booked' }, { status: 409 });
     }
 
+    const { accessToken } = await base44.asServiceRole.connectors.getConnection('googlecalendar');
+    const eventRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        summary: `Riunione con ${guestName}`,
+        description: notes || `Prenotazione ricevuta da ${guestEmail}`,
+        start: {
+          dateTime: getIsoDateTime(scheduledDate, startTime),
+          timeZone: profile.timezone,
+        },
+        end: {
+          dateTime: getIsoDateTime(scheduledDate, endTime),
+          timeZone: profile.timezone,
+        },
+        attendees: [{ email: guestEmail, displayName: guestName }],
+      }),
+    });
+
+    if (!eventRes.ok) {
+      return Response.json({ error: await eventRes.text() }, { status: 502 });
+    }
+
+    const event = await eventRes.json();
+
     const booking = await base44.asServiceRole.entities.MeetingBooking.create({
       scheduling_profile_id: profile.id,
       owner_user_id: profile.user_id,
@@ -60,30 +93,15 @@ Deno.serve(async (req) => {
       guest_email: guestEmail,
       scheduled_date: scheduledDate,
       start_time: startTime,
-      end_time: addMinutes(startTime, duration),
+      end_time: endTime,
       timezone: profile.timezone,
       meeting_duration_minutes: duration,
       notes,
+      google_event_id: event.id,
       status: 'confirmed',
     });
 
-    let confirmationEmailSent = false;
-    let confirmationEmailError = null;
-
-    if (profile.send_confirmation_emails) {
-      try {
-        await base44.asServiceRole.integrations.Core.SendEmail({
-          to: guestEmail,
-          subject: `Conferma riunione - ${scheduledDate} ${startTime}`,
-          body: `Ciao ${guestName},\n\nla tua riunione è confermata per il ${scheduledDate} alle ${startTime} (${profile.timezone}).\n\nA presto.`,
-        });
-        confirmationEmailSent = true;
-      } catch (error) {
-        confirmationEmailError = error.message;
-      }
-    }
-
-    return Response.json({ booking, confirmation_email_sent: confirmationEmailSent, confirmation_email_error: confirmationEmailError });
+    return Response.json({ booking, calendar_event_id: event.id, calendar_event_link: event.htmlLink || null });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
