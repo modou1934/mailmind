@@ -29,6 +29,11 @@ export default function Bozze() {
   const [tab, setTab] = useState('general');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingSignatures, setSavingSignatures] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [accounts, setAccounts] = useState([]);
+  const [accountSignatures, setAccountSignatures] = useState({});
+  const [referenceFiles, setReferenceFiles] = useState([]);
   const [settings, setSettings] = useState({
     enableDrafts: true,
     unusedDraftsDays: 14,
@@ -47,6 +52,14 @@ export default function Bozze() {
   });
 
   const [showUploadModal, setShowUploadModal] = useState(false);
+
+  const loadDraftAssets = async () => {
+    const res = await base44.functions.invoke('getDraftAssets', {});
+    const signaturesMap = Object.fromEntries((res.data?.signatures || []).map((item) => [item.email, item.signature_content || '']));
+    setAccounts(res.data?.accounts || []);
+    setAccountSignatures(signaturesMap);
+    setReferenceFiles(res.data?.reference_files || []);
+  };
 
   useEffect(() => {
     let active = true;
@@ -70,6 +83,11 @@ export default function Bozze() {
           includeSignature: remote.include_signature,
           defaultSignature: remote.default_signature || '',
         }));
+      })
+      .then(async () => {
+        if (active) {
+          await loadDraftAssets();
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -100,6 +118,48 @@ export default function Bozze() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSaveSignatures = async () => {
+    setSavingSignatures(true);
+    try {
+      for (const account of accounts) {
+        await base44.functions.invoke('saveAccountSignature', {
+          email: account.email,
+          signature_content: accountSignatures[account.email] || '',
+        });
+      }
+      await loadDraftAssets();
+    } finally {
+      setSavingSignatures(false);
+    }
+  };
+
+  const handleFileUpload = async (event) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+
+    setUploadingFiles(true);
+    try {
+      for (const file of files) {
+        const uploadRes = await base44.integrations.Core.UploadFile({ file });
+        await base44.functions.invoke('registerReferenceFile', {
+          file_url: uploadRes.file_url,
+          file_name: file.name,
+          file_type: file.type,
+          size_bytes: file.size,
+        });
+      }
+      await loadDraftAssets();
+      event.target.value = '';
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
+
+  const handleDeleteFile = async (fileId) => {
+    await base44.functions.invoke('deleteReferenceFile', { file_id: fileId });
+    await loadDraftAssets();
   };
 
   return (
@@ -307,12 +367,29 @@ export default function Bozze() {
               />
             </div>
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Firme specifiche per account</h3>
-              <div className="text-xs text-brand mb-2">utente@gmail.com</div>
-              <textarea
-                placeholder="Incolla la firma qui"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none h-28 resize-none"
-              />
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-900">Firme specifiche per account</h3>
+                <button onClick={handleSaveSignatures} disabled={savingSignatures} className="text-sm text-gray-500 hover:text-gray-900 disabled:opacity-50">
+                  {savingSignatures ? 'Salvataggio...' : 'Salva firme account'}
+                </button>
+              </div>
+              <div className="space-y-4">
+                {accounts.length === 0 ? (
+                  <div className="text-xs text-gray-400">Connetti prima un account email per salvare firme specifiche.</div>
+                ) : (
+                  accounts.map((account) => (
+                    <div key={account.email}>
+                      <div className="text-xs text-brand mb-2">{account.email}</div>
+                      <textarea
+                        value={accountSignatures[account.email] || ''}
+                        onChange={(e) => setAccountSignatures((prev) => ({ ...prev, [account.email]: e.target.value }))}
+                        placeholder="Incolla la firma qui"
+                        className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none h-28 resize-none"
+                      />
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -344,24 +421,36 @@ export default function Bozze() {
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-1">Carica File</h3>
               <p className="text-xs text-gray-500 mb-4">Carica documenti che MailMind AI può usare come riferimento nelle bozze. Questo aiuta a creare risposte più accurate e personalizzate.</p>
-              <div
-                onClick={() => setShowUploadModal(true)}
-                className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-gray-400 transition-colors"
-              >
+              <label className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-gray-400 transition-colors block">
                 <div className="text-gray-400 text-2xl mb-2">📄</div>
                 <div className="text-sm font-medium text-gray-700">Trascina i file qui</div>
                 <div className="text-xs text-gray-400">oppure clicca per sfogliare • PDF, CSV • Max 10MB ciascuno</div>
-                <button className="mt-2 text-sm text-brand font-medium hover:underline">Scegli file</button>
-              </div>
+                <div className="mt-2 text-sm text-brand font-medium hover:underline">{uploadingFiles ? 'Caricamento...' : 'Scegli file'}</div>
+                <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+              </label>
             </div>
 
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">I tuoi file</h3>
-              <div className="bg-white border border-gray-100 rounded-xl p-8 text-center">
-                <div className="text-gray-300 text-3xl mb-2">📄</div>
-                <div className="text-sm text-gray-500">Nessun file caricato</div>
-                <div className="text-xs text-gray-400 mt-1">Carica documenti per aiutare MailMind AI a scrivere risposte migliori</div>
-              </div>
+              {referenceFiles.length === 0 ? (
+                <div className="bg-white border border-gray-100 rounded-xl p-8 text-center">
+                  <div className="text-gray-300 text-3xl mb-2">📄</div>
+                  <div className="text-sm text-gray-500">Nessun file caricato</div>
+                  <div className="text-xs text-gray-400 mt-1">Carica documenti per aiutare MailMind AI a scrivere risposte migliori</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {referenceFiles.map((file) => (
+                    <div key={file.id} className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">{file.file_name}</div>
+                        <div className="text-xs text-gray-400">{file.file_type || 'file'} · {Math.round((file.size_bytes || 0) / 1024)} KB</div>
+                      </div>
+                      <button onClick={() => handleDeleteFile(file.id)} className="text-xs text-red-500 hover:text-red-600">Elimina</button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
