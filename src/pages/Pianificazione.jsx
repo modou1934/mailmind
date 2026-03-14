@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Copy, ArrowRight, Check } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
 
 const Toggle = ({ checked, onChange }) => (
   <button onClick={() => onChange(!checked)} className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}>
@@ -13,16 +14,96 @@ const days = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
 export default function Pianificazione() {
   const [tab, setTab] = useState('links');
   const [showModal, setShowModal] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [link, setLink] = useState('mailmind.ai/e/utente');
-  const [settings, setSettings] = useState({ includeLink: true, generateDrafts: true, confirmation: true });
+  const [availability, setAvailability] = useState([]);
+  const [settings, setSettings] = useState({
+    includeLink: true,
+    generateDrafts: true,
+    confirmation: true,
+    timezone: 'Europe/Rome',
+    meetingDuration: 30,
+  });
 
-  const availableHours = { 0: [9,10,11,12,14,15,16], 1: [9,10,11,12,14,15,16], 2: [9,10,11,12,14,15,16], 3: [9,10,11,12,14,15,16], 4: [9,10,11,12,14,15,16] };
+  useEffect(() => {
+    let active = true;
+
+    base44.functions.invoke('getSchedulingSettings', {})
+      .then((res) => {
+        if (!active) return;
+        const profile = res.data?.profile;
+        const blocks = res.data?.availability || [];
+
+        if (profile) {
+          setSettings({
+            includeLink: profile.include_link_in_drafts,
+            generateDrafts: profile.generate_drafts_for_proposals,
+            confirmation: profile.send_confirmation_emails,
+            timezone: profile.timezone,
+            meetingDuration: profile.meeting_duration_minutes,
+          });
+          setLink(`mailmind.ai/e/${profile.slug}`);
+        }
+
+        setAvailability(blocks);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const availableHours = useMemo(() => {
+    const map = {};
+    availability.filter((block) => block.is_active).forEach((block) => {
+      const startHour = parseInt(block.start_time.split(':')[0], 10);
+      const endHour = parseInt(block.end_time.split(':')[0], 10);
+      map[block.day_of_week] = [];
+      for (let hour = startHour; hour < endHour; hour += 1) {
+        map[block.day_of_week].push(hour - 1);
+      }
+    });
+    return map;
+  }, [availability]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const slug = link.replace('mailmind.ai/e/', '').trim();
+      const res = await base44.functions.invoke('saveSchedulingSettings', {
+        slug,
+        meeting_duration_minutes: settings.meetingDuration,
+        timezone: settings.timezone,
+        include_link_in_drafts: settings.includeLink,
+        generate_drafts_for_proposals: settings.generateDrafts,
+        send_confirmation_emails: settings.confirmation,
+        availability_blocks: availability.map((block) => ({
+          day_of_week: block.day_of_week,
+          start_time: block.start_time,
+          end_time: block.end_time,
+          timezone: block.timezone,
+          is_active: block.is_active,
+        })),
+      });
+
+      if (res.data?.profile) {
+        setLink(`mailmind.ai/e/${res.data.profile.slug}`);
+      }
+    } finally {
+      setSaving(false);
+      setShowModal(null);
+    }
+  };
 
   return (
     <div className="h-full overflow-auto bg-gray-50">
       <div className="flex items-center justify-between px-8 py-4 bg-white border-b border-gray-100">
         <h1 className="text-lg font-bold text-gray-900">Pianificazione</h1>
-        <button className="text-sm text-brand font-medium hover:underline">Aggiorna preferenze</button>
+        <button onClick={handleSave} disabled={loading || saving} className="text-sm text-brand font-medium hover:underline disabled:opacity-50">{loading ? 'Caricamento...' : saving ? 'Salvataggio...' : 'Aggiorna preferenze'}</button>
       </div>
 
       <div className="px-8 py-6 max-w-4xl">
@@ -54,7 +135,7 @@ export default function Pianificazione() {
                 </div>
                 <div className="flex-shrink-0 w-72">
                   <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden mb-2">
-                    <input readOnly value="https://mailmind.ai/e/utente/30" className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
+                    <input readOnly value={`https://${link}/${settings.meetingDuration}`} className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
                     <button className="flex items-center gap-1 bg-brand text-white px-2 py-2 text-xs font-medium whitespace-nowrap">
                       <Copy className="w-3 h-3" /> Copia link
                     </button>
@@ -111,8 +192,10 @@ export default function Pianificazione() {
               <p className="text-xs text-brand mb-4">Usato dal tuo link di pianificazione e da MailMind AI quando suggerisce orari nelle bozze.</p>
               <div className="mb-4">
                 <div className="text-xs text-gray-500 mb-1">Fuso orario</div>
-                <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
-                  <option>Ora dell'Europa Centrale</option>
+                <select value={settings.timezone} onChange={e => setSettings(s => ({ ...s, timezone: e.target.value }))} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+                  <option value="Europe/Rome">Ora dell'Europa Centrale</option>
+                  <option value="Europe/London">Ora di Londra</option>
+                  <option value="America/New_York">Ora di New York</option>
                 </select>
               </div>
               <h4 className="text-sm font-semibold text-gray-700 mb-2">Ore settimanali</h4>
@@ -175,7 +258,7 @@ export default function Pianificazione() {
             </div>
             <div className="flex justify-end gap-3 mt-4">
               <button onClick={() => setShowModal(null)} className="text-sm text-gray-500 px-4 py-2">Salta</button>
-              <button onClick={() => setShowModal('linkReady')} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold">Continua</button>
+              <button onClick={handleSave} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold">Continua</button>
             </div>
           </div>
         </div>

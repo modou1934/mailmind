@@ -1,11 +1,38 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { RefreshCw, ArrowRight, Copy, ChevronDown } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
 
 export default function Dashboard() {
+  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState({
+    stats: {
+      emails_processed: 0,
+      drafts_created: 0,
+      meeting_hours: 0,
+      connected_accounts: 0,
+    },
+    scheduling: null,
+  });
+
+  const loadSummary = async () => {
+    setLoading(true);
+    try {
+      const res = await base44.functions.invoke('getDashboardSummary', {});
+      setSummary(res.data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSummary();
+  }, []);
+
   const stats = [
-    { label: 'Email elaborate', value: '0' },
-    { label: 'Bozze create', value: '0' },
-    { label: 'Tempo riunioni', value: '0 h' },
+    { label: 'Email elaborate', value: loading ? '...' : String(summary.stats.emails_processed) },
+    { label: 'Bozze create', value: loading ? '...' : String(summary.stats.drafts_created) },
+    { label: 'Tempo riunioni', value: loading ? '...' : `${summary.stats.meeting_hours} h` },
   ];
 
   return (
@@ -17,7 +44,7 @@ export default function Dashboard() {
           <button className="flex items-center gap-1.5 border border-gray-200 px-3 py-1.5 rounded-lg text-sm text-gray-600 hover:bg-gray-50">
             Personale <ChevronDown className="w-3 h-3" />
           </button>
-          <button className="p-1.5 hover:bg-gray-100 rounded-lg"><RefreshCw className="w-4 h-4 text-gray-500" /></button>
+          <button onClick={loadSummary} className="p-1.5 hover:bg-gray-100 rounded-lg"><RefreshCw className="w-4 h-4 text-gray-500" /></button>
         </div>
       </div>
 
@@ -53,7 +80,7 @@ export default function Dashboard() {
             </div>
             <div className="flex-shrink-0 w-80">
               <div className="flex items-center gap-2 border border-gray-200 rounded-lg overflow-hidden mb-2">
-                <input readOnly value="https://mailmind.ai/e/utente/30" className="flex-1 px-3 py-2 text-sm text-gray-600 bg-transparent outline-none truncate" />
+                <input readOnly value={summary.scheduling?.url || 'https://mailmind.ai/e/utente/30'} className="flex-1 px-3 py-2 text-sm text-gray-600 bg-transparent outline-none truncate" />
                 <button className="flex items-center gap-1.5 bg-brand text-white px-3 py-2 text-sm font-medium hover:bg-brand/90 whitespace-nowrap">
                   <Copy className="w-3.5 h-3.5" /> Copia link <ChevronDown className="w-3 h-3" />
                 </button>
