@@ -15,11 +15,13 @@ Deno.serve(async (req) => {
       base44.entities.ReferenceFile.filter({ user_id: user.id }),
     ]);
 
-    const accounts = tokens.map((token) => ({
-      id: token.id,
-      provider: token.provider,
-      email: token.email,
-    }));
+    const accounts = tokens
+      .filter((token) => token.email)
+      .map((token) => ({
+        id: token.id,
+        provider: token.provider,
+        email: token.email,
+      }));
 
     return Response.json({
       accounts,
