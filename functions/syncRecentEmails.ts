@@ -37,42 +37,38 @@ const defaultTopicStates = {
   burocrazia: true,
 };
 
-function wait(ms) {
+function decodeBase64Url(value = '') {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  return atob(normalized);
+}
+
+function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url, options = {}, retries = 3) {
-  let lastResponse;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(url, options);
-    if (response.ok || ![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === retries) {
-      return response;
-    }
-    lastResponse = response;
-    await wait(400 * (2 ** attempt) + Math.floor(Math.random() * 150));
-  }
-  return lastResponse;
-}
-
-async function withRetry(action, retries = 3, baseDelay = 400) {
+async function withRetry(operation, attempts = 3) {
   let lastError;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await action();
+      return await operation();
     } catch (error) {
       lastError = error;
-      if (attempt === retries) {
-        throw error;
+      if (attempt < attempts) {
+        await delay(300 * attempt);
       }
-      await wait(baseDelay * (2 ** attempt) + Math.floor(Math.random() * 150));
     }
   }
   throw lastError;
 }
 
-function decodeBase64Url(value = '') {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  return atob(normalized);
+async function fetchWithRetry(url, options = {}, attempts = 3) {
+  return await withRetry(async () => {
+    const response = await fetch(url, options);
+    if (!response.ok && response.status >= 500) {
+      throw new Error(`Retryable fetch error: ${response.status}`);
+    }
+    return response;
+  }, attempts);
 }
 
 function extractTextFromPayload(part) {
@@ -168,9 +164,7 @@ async function categorizeEmail(settings, fromEmail, subject, snippet) {
 
   const completion = await withRetry(() => llmClient.chat.completions.create({
     model: 'minimaxai/minimax-m2.1',
-    messages: [{
-      role: 'user',
-      content: `Categorizza questa email in italiano.
+    messages: [{ role: 'user', content: `Categorizza questa email in italiano.
 Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.
 
 Regole builder:
@@ -185,8 +179,7 @@ Mittente: ${fromEmail}
 Oggetto: ${subject}
 Anteprima: ${snippet}
 
-Rispondi solo con il nome esatto della categoria.`
-    }],
+Rispondi solo con il nome esatto della categoria.` }],
     temperature: 0,
     top_p: 0.95,
     max_tokens: 50,
@@ -272,35 +265,6 @@ async function applyMailboxPreferences(accessToken, messageId, labelIds, categor
   });
 }
 
-async function upsertThread(base44, payload, settings) {
-  const byMessageId = await base44.asServiceRole.entities.EmailThread.filter({ message_id: payload.message_id });
-  if (byMessageId.length > 0) {
-    return { thread: byMessageId[0], status: 'duplicate_message' };
-  }
-
-  const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: payload.thread_id });
-  const existingThread = existingThreads[0] || null;
-
-  if (!existingThread) {
-    const created = await base44.asServiceRole.entities.EmailThread.create(payload);
-    return { thread: created, status: 'created' };
-  }
-
-  const existingDate = existingThread.received_at ? new Date(existingThread.received_at).getTime() : 0;
-  const incomingDate = payload.received_at ? new Date(payload.received_at).getTime() : 0;
-
-  if (incomingDate <= existingDate) {
-    return { thread: existingThread, status: 'older_message' };
-  }
-
-  const updatePayload = settings.respect_existing_categories && existingThread.category
-    ? { ...payload, category: existingThread.category }
-    : payload;
-
-  const updated = await base44.asServiceRole.entities.EmailThread.update(existingThread.id, updatePayload);
-  return { thread: updated, status: 'updated' };
-}
-
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
@@ -315,6 +279,8 @@ Deno.serve(async (req) => {
     const headers = { Authorization: `Bearer ${accessToken}` };
     const inboxSettings = await getInboxSettings(base44, user);
     const gmailCache = {};
+    const processed = [];
+    const failed = [];
 
     const listRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=-label:SENT -label:DRAFT`, { headers });
     if (!listRes.ok) {
@@ -323,22 +289,24 @@ Deno.serve(async (req) => {
 
     const listData = await listRes.json();
     const messages = listData.messages || [];
-    const processed = [];
-    const skipped = [];
-    const failed = [];
 
     for (const item of messages) {
       try {
+        const existingByMessage = await base44.asServiceRole.entities.EmailThread.filter({ message_id: item.id });
+        if (existingByMessage.length > 0) {
+          processed.push(item.id);
+          continue;
+        }
+
         const msgRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, { headers });
         if (!msgRes.ok) {
-          failed.push({ message_id: item.id, reason: 'message_fetch_failed' });
-          continue;
+          throw new Error(`Message fetch failed: ${msgRes.status}`);
         }
 
         const msg = await msgRes.json();
         const labelIds = msg.labelIds || [];
         if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) {
-          skipped.push({ message_id: item.id, reason: 'system_label' });
+          processed.push(item.id);
           continue;
         }
 
@@ -349,10 +317,12 @@ Deno.serve(async (req) => {
         const { fromName, fromEmail } = parseAddress(from);
         const snippet = msg.snippet || '';
         const body = extractTextFromPayload(msg.payload).slice(0, 5000);
-        const receivedAt = new Date(parseInt(msg.internalDate, 10)).toISOString();
         const category = await categorizeEmail(inboxSettings, fromEmail, subject, snippet);
 
-        const { thread, status } = await upsertThread(base44, {
+        const existingThreadList = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: msg.threadId });
+        const existingThread = existingThreadList[0] || null;
+
+        const threadPayload = {
           thread_id: msg.threadId,
           message_id: item.id,
           subject,
@@ -360,24 +330,25 @@ Deno.serve(async (req) => {
           from_name: fromName,
           snippet,
           body,
-          received_at: receivedAt,
+          received_at: new Date(parseInt(msg.internalDate, 10)).toISOString(),
           category,
           status: 'nuovo',
           labels: labelIds,
-        }, inboxSettings);
+        };
 
-        if (status === 'duplicate_message' || status === 'older_message') {
-          skipped.push({ message_id: item.id, reason: status });
-          continue;
+        let threadRecord = existingThread;
+        if (existingThread) {
+          if (!(inboxSettings.respect_existing_categories && existingThread.category)) {
+            threadRecord = await base44.asServiceRole.entities.EmailThread.update(existingThread.id, threadPayload);
+          }
+        } else {
+          threadRecord = await base44.asServiceRole.entities.EmailThread.create(threadPayload);
         }
 
         await applyMailboxPreferences(accessToken, item.id, labelIds, category, inboxSettings, gmailCache);
 
-        const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category)
-          && body
-          && (!thread?.draft_id || thread.message_id !== item.id);
-
-        if (shouldGenerateDraft) {
+        const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category) && body;
+        if (shouldGenerateDraft && (!threadRecord?.draft_id || threadRecord.message_id !== item.id)) {
           await withRetry(() => base44.asServiceRole.functions.invoke('draftGenerator', {
             thread_id: msg.threadId,
             message_id: item.id,
@@ -389,20 +360,18 @@ Deno.serve(async (req) => {
           }));
         }
 
-        processed.push(thread.id);
+        processed.push(item.id);
       } catch (error) {
-        failed.push({ message_id: item.id, reason: error.message });
+        console.error(`Sync failed for ${item.id}:`, error.message);
+        failed.push({ message_id: item.id, error: error.message });
       }
     }
 
-    return Response.json({
-      success: true,
-      processed_count: processed.length,
-      processed_ids: processed,
-      skipped_count: skipped.length,
-      failed_count: failed.length,
-      failed,
-    });
+    if (failed.length > 0) {
+      return Response.json({ success: false, processed_count: processed.length, processed_ids: processed, failed }, { status: 500 });
+    }
+
+    return Response.json({ success: true, processed_count: processed.length, processed_ids: processed });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }

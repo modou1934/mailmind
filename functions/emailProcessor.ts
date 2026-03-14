@@ -37,42 +37,38 @@ const defaultTopicStates = {
   burocrazia: true,
 };
 
-function wait(ms) {
+function decodeBase64Url(value = '') {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  return atob(normalized);
+}
+
+function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url, options = {}, retries = 3) {
-  let lastResponse;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(url, options);
-    if (response.ok || ![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === retries) {
-      return response;
-    }
-    lastResponse = response;
-    await wait(400 * (2 ** attempt) + Math.floor(Math.random() * 150));
-  }
-  return lastResponse;
-}
-
-async function withRetry(action, retries = 3, baseDelay = 400) {
+async function withRetry(operation, attempts = 3) {
   let lastError;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await action();
+      return await operation();
     } catch (error) {
       lastError = error;
-      if (attempt === retries) {
-        throw error;
+      if (attempt < attempts) {
+        await delay(300 * attempt);
       }
-      await wait(baseDelay * (2 ** attempt) + Math.floor(Math.random() * 150));
     }
   }
   throw lastError;
 }
 
-function decodeBase64Url(value = '') {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
-  return atob(normalized);
+async function fetchWithRetry(url, options = {}, attempts = 3) {
+  return await withRetry(async () => {
+    const response = await fetch(url, options);
+    if (!response.ok && response.status >= 500) {
+      throw new Error(`Retryable fetch error: ${response.status}`);
+    }
+    return response;
+  }, attempts);
 }
 
 async function getInboxSettings(base44, userEmail) {
@@ -297,35 +293,6 @@ async function applyMailboxPreferences(accessToken, messageId, labelIds, categor
   });
 }
 
-async function upsertThread(base44, payload, settings) {
-  const byMessageId = await base44.asServiceRole.entities.EmailThread.filter({ message_id: payload.message_id });
-  if (byMessageId.length > 0) {
-    return { thread: byMessageId[0], status: 'duplicate_message' };
-  }
-
-  const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: payload.thread_id });
-  const existingThread = existingThreads[0] || null;
-
-  if (!existingThread) {
-    const created = await base44.asServiceRole.entities.EmailThread.create(payload);
-    return { thread: created, status: 'created' };
-  }
-
-  const existingDate = existingThread.received_at ? new Date(existingThread.received_at).getTime() : 0;
-  const incomingDate = payload.received_at ? new Date(payload.received_at).getTime() : 0;
-
-  if (incomingDate <= existingDate) {
-    return { thread: existingThread, status: 'older_message' };
-  }
-
-  const updatePayload = settings.respect_existing_categories && existingThread.category
-    ? { ...payload, category: existingThread.category }
-    : payload;
-
-  const updated = await base44.asServiceRole.entities.EmailThread.update(existingThread.id, updatePayload);
-  return { thread: updated, status: 'updated' };
-}
-
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
@@ -374,23 +341,28 @@ Deno.serve(async (req) => {
     const historyData = await historyRes.json();
     const histories = historyData.history || [];
     const processedIds = [];
-    const skipped = [];
-    const failed = [];
+    const failedIds = [];
 
     for (const history of histories) {
       for (const added of history.messagesAdded || []) {
         const msgId = added.message.id;
+
         try {
+          const existingByMessage = await base44.asServiceRole.entities.EmailThread.filter({ message_id: msgId });
+          if (existingByMessage.length > 0) {
+            processedIds.push(msgId);
+            continue;
+          }
+
           const msgRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`, { headers: authHeader });
           if (!msgRes.ok) {
-            failed.push({ message_id: msgId, reason: 'message_fetch_failed' });
-            continue;
+            throw new Error(`Message fetch failed: ${msgRes.status}`);
           }
 
           const msg = await msgRes.json();
           const labelIds = msg.labelIds || [];
           if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) {
-            skipped.push({ message_id: msgId, reason: 'system_label' });
+            processedIds.push(msgId);
             continue;
           }
 
@@ -401,9 +373,11 @@ Deno.serve(async (req) => {
           const snippet = msg.snippet || '';
           const bodyText = extractText(msg.payload).slice(0, 5000);
           const category = await categorizeEmail(settings, fromEmail, subject, snippet);
-          const receivedAt = new Date(parseInt(msg.internalDate, 10)).toISOString();
 
-          const { thread, status } = await upsertThread(base44, {
+          const existingThreadList = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: msg.threadId });
+          const existingThread = existingThreadList[0] || null;
+
+          const threadPayload = {
             thread_id: msg.threadId,
             message_id: msgId,
             subject,
@@ -411,15 +385,19 @@ Deno.serve(async (req) => {
             from_name: fromName,
             snippet,
             body: bodyText,
-            received_at: receivedAt,
+            received_at: new Date(parseInt(msg.internalDate, 10)).toISOString(),
             category,
             status: 'nuovo',
             labels: labelIds,
-          }, settings);
+          };
 
-          if (status === 'duplicate_message' || status === 'older_message') {
-            skipped.push({ message_id: msgId, reason: status });
-            continue;
+          let threadRecord = existingThread;
+          if (existingThread) {
+            if (!(settings.respect_existing_categories && existingThread.category)) {
+              threadRecord = await base44.asServiceRole.entities.EmailThread.update(existingThread.id, threadPayload);
+            }
+          } else {
+            threadRecord = await base44.asServiceRole.entities.EmailThread.create(threadPayload);
           }
 
           await applyMailboxPreferences(accessToken, msgId, labelIds, category, settings, gmailCache);
@@ -427,7 +405,7 @@ Deno.serve(async (req) => {
           const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category)
             && bodyText
             && userId
-            && (!thread?.draft_id || thread.message_id !== msgId);
+            && (!threadRecord?.draft_id || threadRecord.message_id !== msgId);
 
           if (shouldGenerateDraft) {
             await withRetry(() => base44.asServiceRole.functions.invoke('draftGenerator', {
@@ -443,9 +421,18 @@ Deno.serve(async (req) => {
 
           processedIds.push(msgId);
         } catch (error) {
-          failed.push({ message_id: msgId, reason: error.message });
+          console.error(`Email processing failed for ${msgId}:`, error.message);
+          failedIds.push({ message_id: msgId, error: error.message });
         }
       }
+    }
+
+    if (failedIds.length > 0) {
+      return Response.json({
+        status: 'partial_failure',
+        processed: processedIds.length,
+        failed: failedIds,
+      }, { status: 500 });
     }
 
     await base44.asServiceRole.entities.SyncState.update(syncRecord.id, {
@@ -453,14 +440,7 @@ Deno.serve(async (req) => {
       account_email: accountEmail,
     });
 
-    return Response.json({
-      status: 'ok',
-      processed: processedIds.length,
-      message_ids: processedIds,
-      skipped_count: skipped.length,
-      failed_count: failed.length,
-      failed,
-    });
+    return Response.json({ status: 'ok', processed: processedIds.length, message_ids: processedIds });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
