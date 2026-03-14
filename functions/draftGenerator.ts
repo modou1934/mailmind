@@ -1,5 +1,15 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
 
+async function resolveUserId(base44, explicitUserId) {
+  if (explicitUserId) return explicitUserId;
+  try {
+    const user = await base44.auth.me();
+    return user?.id || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function getDraftSettings(base44, userId) {
   const settings = await base44.asServiceRole.entities.DraftSettings.filter({ user_id: userId });
   return settings[0] || {
@@ -16,8 +26,8 @@ async function getDraftSettings(base44, userId) {
   };
 }
 
-async function getSignature(base44, userId, fromEmail) {
-  const signatures = await base44.asServiceRole.entities.AccountSignature.filter({ user_id: userId, email: fromEmail });
+async function getSignature(base44, userId, accountEmail) {
+  const signatures = await base44.asServiceRole.entities.AccountSignature.filter({ user_id: userId, email: accountEmail });
   return signatures[0]?.signature_content || '';
 }
 
@@ -25,23 +35,26 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const base44 = createClientFromRequest(req);
-    const user = await base44.auth.me();
-    if (!user) {
+    const { thread_id, message_id, subject, from_email, body: emailBody, user_id, account_email } = body;
+    const resolvedUserId = await resolveUserId(base44, user_id);
+
+    if (!resolvedUserId) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { thread_id, message_id, subject, from_email, body: emailBody } = body;
     if (!thread_id || !emailBody) {
       return Response.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const settings = await getDraftSettings(base44, user.id);
+    const settings = await getDraftSettings(base44, resolvedUserId);
     if (!settings.enable_drafts) {
       return Response.json({ skipped: true, reason: 'drafts_disabled' });
     }
 
-    const accountSignature = await getSignature(base44, user.id, user.email);
-    const signatureToUse = settings.include_signature ? (accountSignature || settings.default_signature || '') : '';
+    const signatureToUse = settings.include_signature
+      ? (await getSignature(base44, resolvedUserId, account_email || '')) || settings.default_signature || ''
+      : '';
+
     const toneInstructions = settings.custom_tone_enabled && settings.custom_tone_text
       ? `Istruzioni personalizzate utente: ${settings.custom_tone_text}`
       : 'Nessuna istruzione personalizzata.';
@@ -62,7 +75,7 @@ Oggetto: ${subject}
 Contenuto email:
 ${emailBody}
 
-Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.` ,
+Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.`,
       response_json_schema: {
         type: 'object',
         properties: {

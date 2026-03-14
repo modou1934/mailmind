@@ -207,6 +207,8 @@ Deno.serve(async (req) => {
           subject,
           from_email: fromEmail,
           body: body.slice(0, 3000),
+          user_id: user.id,
+          account_email: user.email,
         });
       }
 
