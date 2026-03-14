@@ -117,7 +117,8 @@ Deno.serve(async (req) => {
       max_tokens: 1200,
     }));
 
-    const reply = completion.choices?.[0]?.message?.content?.trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
+    const rawReply = completion.choices?.[0]?.message?.content?.trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
+    const reply = rawReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
 
     const assistantMessage = await base44.entities.ChatMessage.create({
       conversation_id: conversation.id,

@@ -1,62 +1,132 @@
-import { useState } from 'react';
-import { Search, Plus, Send, Mic, ChevronDown, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { base44 } from '@/api/base44Client';
+import ConversationList from '@/components/chat/ConversationList';
+import MessageThread from '@/components/chat/MessageThread';
+import ChatComposer from '@/components/chat/ChatComposer';
+
+const suggestions = [
+  'Riassumi le email importanti di questa settimana',
+  'Quali bozze ho già pronte da inviare?',
+  'Quali riunioni recenti hanno action item aperti?',
+];
 
 export default function Chat() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
   const [conversations, setConversations] = useState([]);
-  const [activeConv, setActiveConv] = useState(null);
+  const [activeConversation, setActiveConversation] = useState(null);
+  const [messages, setMessages] = useState([]);
+
+  const loadConversations = async (currentUser) => {
+    const items = await base44.entities.ChatConversation.filter({ user_id: currentUser.id });
+    const sorted = [...items].sort((a, b) => new Date(b.last_message_at || b.updated_date || 0) - new Date(a.last_message_at || a.updated_date || 0));
+    setConversations(sorted);
+    if (!activeConversation && sorted.length > 0) {
+      setActiveConversation(sorted[0]);
+    }
+    return sorted;
+  };
+
+  const loadMessages = async (conversationId, currentUser) => {
+    if (!conversationId || !currentUser) {
+      setMessages([]);
+      return;
+    }
+    const items = await base44.entities.ChatMessage.filter({ conversation_id: conversationId, user_id: currentUser.id });
+    const sorted = [...items].sort((a, b) => new Date(a.created_date) - new Date(b.created_date));
+    setMessages(sorted);
+  };
+
+  useEffect(() => {
+    let active = true;
+    base44.auth.me().then(async (currentUser) => {
+      if (!active) return;
+      setUser(currentUser);
+      await loadConversations(currentUser);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (user && activeConversation?.id) {
+      loadMessages(activeConversation.id, user);
+    } else {
+      setMessages([]);
+    }
+  }, [user, activeConversation]);
+
+  const filteredConversations = useMemo(() => conversations.filter((conversation) => (conversation.title || '').toLowerCase().includes(search.toLowerCase())), [conversations, search]);
+
+  const handleNewChat = async () => {
+    if (!user) return;
+    const conversation = await base44.entities.ChatConversation.create({
+      user_id: user.id,
+      title: 'Nuova chat',
+      context_type: 'workspace',
+      last_message_at: new Date().toISOString(),
+    });
+    const updated = [conversation, ...conversations];
+    setConversations(updated);
+    setActiveConversation(conversation);
+    setMessages([]);
+    setMessage('');
+  };
+
+  const handleSend = async (presetMessage) => {
+    const nextMessage = (presetMessage ?? message).trim();
+    if (!nextMessage || !user) return;
+
+    setSending(true);
+    try {
+      let conversation = activeConversation;
+      if (!conversation) {
+        conversation = await base44.entities.ChatConversation.create({
+          user_id: user.id,
+          title: nextMessage.slice(0, 60),
+          context_type: 'workspace',
+          last_message_at: new Date().toISOString(),
+        });
+        setActiveConversation(conversation);
+      }
+
+      setMessage('');
+      await base44.functions.invoke('workspaceChat', {
+        conversation_id: conversation.id,
+        message: nextMessage,
+      });
+
+      const updatedConversations = await loadConversations(user);
+      const refreshed = updatedConversations.find((item) => item.id === conversation.id) || conversation;
+      setActiveConversation(refreshed);
+      await loadMessages(conversation.id, user);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="h-full flex items-center justify-center text-sm text-gray-400">Caricamento chat...</div>;
+  }
 
   return (
     <div className="h-full flex bg-gray-50">
-      {/* Sidebar */}
-      <div className="w-56 bg-white border-r border-gray-100 flex flex-col flex-shrink-0">
-        <div className="p-3">
-          <div className="relative mb-3">
-            <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
-            <input className="w-full pl-8 pr-3 py-2 text-xs border border-gray-200 rounded-lg bg-gray-50 outline-none" placeholder="Cerca" />
-          </div>
-          <button className="w-full flex items-center justify-center gap-2 bg-brand text-white py-2 rounded-lg text-sm font-medium hover:bg-brand/90">
-            <Plus className="w-4 h-4" /> Nuova Chat
-          </button>
-        </div>
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-xs text-gray-400">Nessuna cronologia chat</p>
-        </div>
-      </div>
-
-      {/* Main */}
-      <div className="flex-1 flex flex-col items-center justify-center">
-        <div className="text-center mb-8">
-          <h1 className="text-5xl font-black text-brand mb-6">MailMind AI</h1>
-          <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 w-96 shadow-sm">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Mic className="w-4 h-4 text-gray-400" />
-                <div className="flex items-center gap-1.5 border border-gray-200 rounded-full px-2 py-0.5">
-                  <span className="text-base">✉️</span>
-                  <span className="text-xs text-gray-600">utente@gmail.com</span>
-                  <ChevronDown className="w-3 h-3 text-gray-400" />
-                </div>
-              </div>
-              <button className="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center hover:bg-gray-200 transition-colors">
-                <Send className="w-3 h-3 text-gray-400" />
-              </button>
-            </div>
-            <input
-              value={message}
-              onChange={e => setMessage(e.target.value)}
-              placeholder="Chiedimi qualcosa sulle tue riunioni & email..."
-              className="w-full text-sm text-gray-600 outline-none placeholder-gray-400"
-            />
-          </div>
-          <div className="mt-4 space-y-2">
-            {['Come stava andando il progetto X?', 'Riassumi le email di questa settimana', 'Chi aspetta ancora mia risposta?'].map(q => (
-              <button key={q} onClick={() => setMessage(q)} className="block w-96 mx-auto bg-white border border-gray-100 rounded-lg px-4 py-2.5 text-sm text-gray-400 text-left hover:border-brand hover:text-brand transition-colors">
-                {q}
-              </button>
-            ))}
-          </div>
-        </div>
+      <ConversationList
+        conversations={filteredConversations}
+        activeId={activeConversation?.id}
+        search={search}
+        onSearchChange={setSearch}
+        onSelect={setActiveConversation}
+        onNewChat={handleNewChat}
+      />
+      <div className="flex-1 flex flex-col">
+        <MessageThread messages={messages} suggestions={suggestions} onSuggestionClick={handleSend} />
+        <ChatComposer value={message} onChange={setMessage} onSend={() => handleSend()} isSending={sending} />
       </div>
     </div>
   );
