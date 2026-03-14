@@ -78,6 +78,9 @@ export default function Onboarding() {
           if (provider === 'google') {
             await base44.functions.invoke('syncRecentEmails', { max_results: 25 }).catch(() => null);
           }
+          if (provider === 'microsoft') {
+            await base44.functions.invoke('syncMicrosoftRecentEmails', {}).catch(() => null);
+          }
           await advanceTo(1, { email_connected: true });
           setBusy(false);
           toast({ title: `Inbox connessa: ${event.data.email}` });

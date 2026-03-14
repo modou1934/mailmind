@@ -10,8 +10,8 @@ Deno.serve(async (req) => {
     }
 
     const [emails, drafts, meetingNotes, schedulingProfiles, connectedAccounts] = await Promise.all([
-      base44.asServiceRole.entities.EmailThread.filter({ created_by: user.email }),
-      base44.asServiceRole.entities.Draft.filter({ created_by: user.email }),
+      base44.asServiceRole.entities.EmailThread.filter({ user_id: user.id }),
+      base44.asServiceRole.entities.Draft.filter({ user_id: user.id }),
       base44.entities.MeetingNote.filter({ user_id: user.id }),
       base44.entities.SchedulingProfile.filter({ user_id: user.id }),
       base44.asServiceRole.entities.UserOAuthToken.filter({ user_id: user.id }),

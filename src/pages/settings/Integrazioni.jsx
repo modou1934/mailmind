@@ -81,6 +81,9 @@ export default function Integrazioni() {
           if (provider === 'google') {
             base44.functions.invoke('syncRecentEmails', { max_results: 25 }).catch(() => null);
           }
+          if (provider === 'microsoft') {
+            base44.functions.invoke('syncMicrosoftRecentEmails', {}).catch(() => null);
+          }
           loadAccounts();
         } else if (event.data?.type === 'oauth_error') {
           window.removeEventListener('message', handler);
