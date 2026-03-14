@@ -1,110 +1,121 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
 
-// Called by Base44 connector automation on Gmail mailbox changes
 Deno.serve(async (req) => {
-  const body = await req.json();
-  const base44 = createClientFromRequest(req);
+  try {
+    const body = await req.json();
+    const base44 = createClientFromRequest(req);
+    const encodedMessage = body?.data?.message?.data;
 
-  // 1. Decode Pub/Sub notification from Gmail
-  const decoded = JSON.parse(atob(body.data.message.data));
-  const currentHistoryId = String(decoded.historyId);
+    if (!encodedMessage) {
+      return Response.json({ error: 'Invalid Gmail webhook payload' }, { status: 400 });
+    }
 
-  // 2. Get Gmail access token
-  const { accessToken } = await base44.asServiceRole.connectors.getConnection('gmail');
-  const authHeader = { Authorization: `Bearer ${accessToken}` };
+    const decoded = JSON.parse(atob(encodedMessage));
+    const currentHistoryId = String(decoded.historyId);
 
-  // 3. Load previous historyId from SyncState entity
-  const syncStates = await base44.asServiceRole.entities.SyncState.list();
-  const syncRecord = syncStates.length > 0 ? syncStates[0] : null;
+    const { accessToken } = await base44.asServiceRole.connectors.getConnection('gmail');
+    const authHeader = { Authorization: `Bearer ${accessToken}` };
 
-  if (!syncRecord) {
-    // First run: save baseline historyId, skip processing
-    await base44.asServiceRole.entities.SyncState.create({
-      history_id: currentHistoryId,
-      account_email: decoded.emailAddress || ''
-    });
-    return Response.json({ status: 'initialized', historyId: currentHistoryId });
-  }
+    const syncStates = await base44.asServiceRole.entities.SyncState.list();
+    const syncRecord = syncStates.length > 0 ? syncStates[0] : null;
 
-  const prevHistoryId = syncRecord.history_id;
+    if (!syncRecord) {
+      await base44.asServiceRole.entities.SyncState.create({
+        history_id: currentHistoryId,
+        account_email: decoded.emailAddress || '',
+      });
+      return Response.json({ status: 'initialized', historyId: currentHistoryId });
+    }
 
-  // 4. Fetch new messages since last historyId
-  const historyRes = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/history?startHistoryId=${prevHistoryId}&historyTypes=messageAdded`,
-    { headers: authHeader }
-  );
+    const prevHistoryId = syncRecord.history_id;
+    const historyRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/history?startHistoryId=${prevHistoryId}&historyTypes=messageAdded`,
+      { headers: authHeader },
+    );
 
-  if (!historyRes.ok) {
-    const err = await historyRes.text();
-    return Response.json({ status: 'history_error', detail: err }, { status: 500 });
-  }
+    if (historyRes.status === 404) {
+      await base44.asServiceRole.entities.SyncState.update(syncRecord.id, {
+        history_id: currentHistoryId,
+        account_email: decoded.emailAddress || syncRecord.account_email || '',
+      });
+      return Response.json({ status: 'history_reset', historyId: currentHistoryId });
+    }
 
-  const historyData = await historyRes.json();
-  const histories = historyData.history || [];
+    if (!historyRes.ok) {
+      const err = await historyRes.text();
+      return Response.json({ status: 'history_error', detail: err }, { status: 500 });
+    }
 
-  const processedIds = [];
+    const historyData = await historyRes.json();
+    const histories = historyData.history || [];
+    const processedIds = [];
 
-  for (const history of histories) {
-    for (const added of (history.messagesAdded || [])) {
-      const msgId = added.message.id;
+    for (const history of histories) {
+      for (const added of history.messagesAdded || []) {
+        const msgId = added.message.id;
 
-      // 5. Fetch full message
-      const msgRes = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`,
-        { headers: authHeader }
-      );
-      if (!msgRes.ok) continue;
+        const msgRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`,
+          { headers: authHeader },
+        );
 
-      const msg = await msgRes.json();
-
-      // Skip drafts/sent
-      const labelIds = msg.labelIds || [];
-      if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) continue;
-
-      // 6. Parse headers
-      const headers = msg.payload?.headers || [];
-      const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
-
-      const subject = getHeader('Subject');
-      const from = getHeader('From');
-      const fromMatch = from.match(/^(.*?)\s*<(.+)>$/) || [null, from, from];
-      const fromName = (fromMatch[1] || '').trim().replace(/^"|"$/g, '');
-      const fromEmail = fromMatch[2] || from;
-      const receivedAt = new Date(parseInt(msg.internalDate)).toISOString();
-      const snippet = msg.snippet || '';
-
-      // 7. Extract body text
-      let bodyText = '';
-      const extractText = (part) => {
-        if (!part) return;
-        if (part.mimeType === 'text/plain' && part.body?.data) {
-          bodyText += atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+        if (!msgRes.ok) {
+          continue;
         }
-        for (const sub of (part.parts || [])) extractText(sub);
-      };
-      extractText(msg.payload);
 
-      // 8. AI categorization
-      const categoryResult = await base44.asServiceRole.integrations.Core.InvokeLLM({
-        prompt: `Categorizza questa email in italiano. Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.
+        const msg = await msgRes.json();
+        const labelIds = msg.labelIds || [];
+
+        if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) {
+          continue;
+        }
+
+        const headers = msg.payload?.headers || [];
+        const getHeader = (name) => headers.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value || '';
+
+        const subject = getHeader('Subject');
+        const from = getHeader('From');
+        const fromMatch = from.match(/^(.*?)\s*<(.+)>$/) || [null, from, from];
+        const fromName = (fromMatch[1] || '').trim().replace(/^"|"$/g, '');
+        const fromEmail = fromMatch[2] || from;
+        const receivedAt = new Date(parseInt(msg.internalDate, 10)).toISOString();
+        const snippet = msg.snippet || '';
+
+        let bodyText = '';
+        const extractText = (part) => {
+          if (!part) {
+            return;
+          }
+          if (part.mimeType === 'text/plain' && part.body?.data) {
+            bodyText += atob(part.body.data.replace(/-/g, '+').replace(/_/g, '/'));
+          }
+          for (const subPart of part.parts || []) {
+            extractText(subPart);
+          }
+        };
+        extractText(msg.payload);
+
+        const categoryResult = await base44.asServiceRole.integrations.Core.InvokeLLM({
+          prompt: `Categorizza questa email in italiano. Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.
 
 Mittente: ${fromEmail}
 Oggetto: ${subject}
 Anteprima: ${snippet}
 
 Rispondi con SOLO il nome della categoria, nessun altro testo.`,
-        response_json_schema: {
-          type: 'object',
-          properties: { category: { type: 'string' } }
-        }
-      });
+          response_json_schema: {
+            type: 'object',
+            properties: {
+              category: { type: 'string' },
+            },
+          },
+        });
 
-      const category = categoryResult?.category || 'altro';
+        const category = categoryResult?.category || 'altro';
+        const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: msg.threadId });
+        const existingThread = existingThreads[0] || null;
 
-      // 9. Save EmailThread entity
-      const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: msg.threadId });
-      if (existingThreads.length === 0) {
-        await base44.asServiceRole.entities.EmailThread.create({
+        const threadPayload = {
           thread_id: msg.threadId,
           message_id: msgId,
           subject,
@@ -115,29 +126,40 @@ Rispondi con SOLO il nome della categoria, nessun altro testo.`,
           received_at: receivedAt,
           category,
           status: 'nuovo',
-          labels: labelIds
-        });
-      }
+          labels: labelIds,
+        };
 
-      // 10. Auto-generate draft if category requires a reply
-      if (['da_rispondere', 'contratto'].includes(category) && bodyText) {
-        await base44.asServiceRole.functions.invoke('draftGenerator', {
-          thread_id: msg.threadId,
-          message_id: msgId,
-          subject,
-          from_email: fromEmail,
-          body: bodyText.slice(0, 3000)
-        });
-      }
+        if (existingThread) {
+          await base44.asServiceRole.entities.EmailThread.update(existingThread.id, threadPayload);
+        } else {
+          await base44.asServiceRole.entities.EmailThread.create(threadPayload);
+        }
 
-      processedIds.push(msgId);
+        const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category)
+          && bodyText
+          && (!existingThread || existingThread.message_id !== msgId || !existingThread.draft_id);
+
+        if (shouldGenerateDraft) {
+          await base44.asServiceRole.functions.invoke('draftGenerator', {
+            thread_id: msg.threadId,
+            message_id: msgId,
+            subject,
+            from_email: fromEmail,
+            body: bodyText.slice(0, 3000),
+          });
+        }
+
+        processedIds.push(msgId);
+      }
     }
+
+    await base44.asServiceRole.entities.SyncState.update(syncRecord.id, {
+      history_id: currentHistoryId,
+      account_email: decoded.emailAddress || syncRecord.account_email || '',
+    });
+
+    return Response.json({ status: 'ok', processed: processedIds.length, message_ids: processedIds });
+  } catch (error) {
+    return Response.json({ error: error.message }, { status: 500 });
   }
-
-  // 11. Update stored historyId
-  await base44.asServiceRole.entities.SyncState.update(syncRecord.id, {
-    history_id: currentHistoryId
-  });
-
-  return Response.json({ status: 'ok', processed: processedIds.length });
 });

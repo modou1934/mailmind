@@ -19,12 +19,23 @@ export default function Integrazioni() {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
 
-  const loadAccounts = async () => {
+  useEffect(() => {
+    base44.auth.me().then(setCurrentUser).catch(() => setLoading(false));
+  }, []);
+
+  const loadAccounts = async (userId = currentUser?.id) => {
+    if (!userId) {
+      setAccounts([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await base44.functions.invoke('getConnectedAccounts', {});
+      const res = await base44.functions.invoke('getConnectedAccounts', { user_id: userId });
       setAccounts(res.data.accounts || []);
     } catch (e) {
       setAccounts([]);
@@ -33,15 +44,24 @@ export default function Integrazioni() {
     }
   };
 
-  useEffect(() => { loadAccounts(); }, []);
+  useEffect(() => {
+    if (currentUser?.id) {
+      loadAccounts(currentUser.id);
+    }
+  }, [currentUser]);
 
   const connectProvider = async (provider) => {
+    if (!currentUser?.id) {
+      toast({ title: 'Sessione non pronta', description: 'Ricarica la pagina e riprova.', variant: 'destructive' });
+      return;
+    }
+
     setConnecting(provider);
     const providerPath = provider === 'google' ? 'google' : 'microsoft';
-    const redirect_uri = `https://cherubic-mail-mind-flow.base44.app/oauth/${providerPath}`;
+    const redirect_uri = `${window.location.origin}/oauth/${providerPath}`;
 
     try {
-      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri });
+      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri, user_id: currentUser.id });
       const authUrl = res.data.url;
 
       const popup = window.open(authUrl, 'oauth', 'width=500,height=700,left=200,top=100');
@@ -83,9 +103,13 @@ export default function Integrazioni() {
   };
 
   const disconnect = async (tokenId) => {
-    await base44.functions.invoke('disconnectAccount', { token_id: tokenId });
+    if (!currentUser?.id) {
+      return;
+    }
+
+    await base44.functions.invoke('disconnectAccount', { token_id: tokenId, user_id: currentUser.id });
     toast({ title: 'Account disconnesso' });
-    loadAccounts();
+    loadAccounts(currentUser.id);
   };
 
   const googleAccounts = accounts.filter(a => a.provider === 'google');
