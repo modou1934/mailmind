@@ -274,8 +274,8 @@ export default function Pianificazione() {
             <p className="text-sm text-gray-500 mb-4">Aggiungilo alla tua firma email, condividilo nei messaggi, o postalo su LinkedIn.</p>
             <div className="border border-gray-200 rounded-xl p-4 flex items-center justify-between">
               <div>
-                <div className="font-semibold text-gray-900 text-sm">Riunione da 30 Minuti</div>
-                <div className="text-xs text-gray-500">Il tuo nome</div>
+                <div className="font-semibold text-gray-900 text-sm">Riunione da {settings.meetingDuration} Minuti</div>
+                <div className="text-xs text-gray-500">{`${window.location.origin}/book/${link.replace('mailmind.ai/e/', '')}`}</div>
               </div>
               <button className="flex items-center gap-1.5 bg-brand text-white px-3 py-2 rounded-lg text-xs font-medium">
                 <Copy className="w-3.5 h-3.5" /> Copia link
