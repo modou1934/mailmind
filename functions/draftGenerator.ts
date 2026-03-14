@@ -1,42 +1,27 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
-import OpenAI from 'npm:openai@4.104.0';
 
-const llmClient = new OpenAI({
-  baseURL: 'https://integrate.api.nvidia.com/v1',
-  apiKey: Deno.env.get('NVIDIA_API_KEY'),
-});
+const GEMINI_MODEL = 'gemini-3-flash-preview';
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+async function callGemini(prompt) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${Deno.env.get('GEMINI_API_KEY')}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.95,
+        maxOutputTokens: 2000,
+      },
+    }),
+  });
 
-async function withRetry(action, retries = 3, baseDelay = 400) {
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      return await action();
-    } catch (error) {
-      lastError = error;
-      if (attempt === retries) {
-        throw error;
-      }
-      await wait(baseDelay * (2 ** attempt) + Math.floor(Math.random() * 150));
-    }
+  if (!response.ok) {
+    throw new Error(await response.text());
   }
-  throw lastError;
-}
 
-async function fetchWithRetry(url, options = {}, retries = 3) {
-  let lastResponse;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(url, options);
-    if (response.ok || ![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === retries) {
-      return response;
-    }
-    lastResponse = response;
-    await wait(400 * (2 ** attempt) + Math.floor(Math.random() * 150));
-  }
-  return lastResponse;
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || '';
 }
 
 async function resolveUserId(base44, explicitUserId) {
@@ -75,18 +60,6 @@ async function getReferenceFiles(base44, userId) {
   return files.slice(0, 8).map((file) => `- ${file.file_name} (${file.file_type || 'file'})`).join('\n');
 }
 
-async function generateDraftWithNvidia(prompt) {
-  const completion = await withRetry(() => llmClient.chat.completions.create({
-    model: 'minimaxai/minimax-m2.1',
-    messages: [{ role: 'user', content: prompt }],
-    temperature: 0.7,
-    top_p: 0.95,
-    max_tokens: 2000,
-  }));
-
-  return completion.choices?.[0]?.message?.content?.trim() || '';
-}
-
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
@@ -98,30 +71,13 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    if (!thread_id || !emailBody || !message_id) {
+    if (!thread_id || !emailBody) {
       return Response.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
     const settings = await getDraftSettings(base44, resolvedUserId);
     if (!settings.enable_drafts) {
       return Response.json({ skipped: true, reason: 'drafts_disabled' });
-    }
-
-    const threads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id });
-    const emailThreadEntity = threads[0] || null;
-
-    if (emailThreadEntity?.message_id === message_id && emailThreadEntity?.draft_id) {
-      const existingDrafts = await base44.asServiceRole.entities.Draft.filter({ thread_id });
-      const existingDraft = existingDrafts.find((draft) => draft.id === emailThreadEntity.draft_id);
-      if (existingDraft) {
-        return Response.json({
-          status: 'ok',
-          draft_id: existingDraft.id,
-          gmail_draft_id: existingDraft.gmail_draft_id || '',
-          content: existingDraft.content,
-          reused_existing: true,
-        });
-      }
     }
 
     const signatureToUse = settings.include_signature
@@ -152,10 +108,13 @@ ${emailBody}
 
 Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo. Se i file di riferimento sono utili, tienili in considerazione come contesto operativo.`;
 
-    const draftContent = await generateDraftWithNvidia(prompt);
+    const draftContent = await callGemini(prompt);
     if (!draftContent) {
       return Response.json({ error: 'AI generation failed' }, { status: 500 });
     }
+
+    const threads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id });
+    const emailThreadEntity = threads[0] || null;
 
     const draftEntity = await base44.asServiceRole.entities.Draft.create({
       email_thread_id: emailThreadEntity?.id || thread_id,
@@ -182,7 +141,7 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firm
       .replace(/\//g, '_')
       .replace(/=+$/, '');
 
-    const gmailRes = await fetchWithRetry('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
+    const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/drafts', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,

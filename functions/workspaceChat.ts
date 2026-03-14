@@ -1,10 +1,28 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
-import OpenAI from 'npm:openai@4.104.0';
 
-const llmClient = new OpenAI({
-  baseURL: 'https://integrate.api.nvidia.com/v1',
-  apiKey: Deno.env.get('NVIDIA_API_KEY'),
-});
+const GEMINI_MODEL = 'gemini-3-flash-preview';
+
+async function callGemini(prompt) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${Deno.env.get('GEMINI_API_KEY')}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.4,
+        topP: 0.95,
+        maxOutputTokens: 1200,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || '';
+}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,35 +114,20 @@ Deno.serve(async (req) => {
     ]);
 
     const orderedMessages = [...messages].reverse();
-    const conversationHistory = orderedMessages.map((item) => ({
-      role: item.role === 'assistant' ? 'assistant' : 'user',
-      content: item.content,
-    }));
+    const conversationHistory = orderedMessages.map((item) => `${item.role === 'assistant' ? 'Assistente' : 'Utente'}: ${item.content}`).join('\n');
 
     const workspaceContext = `EMAIL RECENTI:\n${summarizeEmails(emails)}\n\nBOZZE RECENTI:\n${summarizeDrafts(drafts)}\n\nNOTE RIUNIONE RECENTI:\n${summarizeMeetingNotes(meetingNotes)}\n\nSCHEDULING:\n${summarizeScheduling(schedulingProfiles[0] || null)}`;
 
-    const completion = await withRetry(() => llmClient.chat.completions.create({
-      model: 'minimaxai/minimax-m2.1',
-      messages: [
-        {
-          role: 'system',
-          content: `Sei MailMind AI, un assistente workspace per email, bozze, riunioni e pianificazione. Rispondi sempre in italiano in modo utile e concreto. Usa solo il contesto disponibile. Se il dato non è presente, dillo chiaramente senza inventare.\n\nCONTESTO WORKSPACE:\n${workspaceContext}`,
-        },
-        ...conversationHistory,
-      ],
-      temperature: 0.4,
-      top_p: 0.95,
-      max_tokens: 1200,
-    }));
+    const prompt = `Sei MailMind AI, un assistente workspace per email, bozze, riunioni e pianificazione. Rispondi sempre in italiano in modo utile e concreto. Usa solo il contesto disponibile. Se il dato non è presente, dillo chiaramente senza inventare.\n\nCONTESTO WORKSPACE:\n${workspaceContext}\n\nCRONOLOGIA CONVERSAZIONE:\n${conversationHistory}`;
 
-    const rawReply = completion.choices?.[0]?.message?.content?.trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
-    const reply = rawReply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
+    const reply = await withRetry(() => callGemini(`${prompt}\n\nDOMANDA UTENTE:\n${message}`));
+    const cleanedReply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || 'Non ho trovato abbastanza informazioni per rispondere.';
 
     const assistantMessage = await base44.entities.ChatMessage.create({
       conversation_id: conversation.id,
       user_id: user.id,
       role: 'assistant',
-      content: reply,
+      content: cleanedReply,
     });
 
     const updatedConversation = await base44.entities.ChatConversation.update(conversation.id, {
@@ -136,7 +139,7 @@ Deno.serve(async (req) => {
       conversation: updatedConversation,
       user_message: userMessage,
       assistant_message: assistantMessage,
-      reply,
+      reply: cleanedReply,
     });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });

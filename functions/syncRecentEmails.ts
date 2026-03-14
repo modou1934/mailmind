@@ -1,11 +1,6 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
-import OpenAI from 'npm:openai@4.104.0';
 
-const llmClient = new OpenAI({
-  baseURL: 'https://integrate.api.nvidia.com/v1',
-  apiKey: Deno.env.get('NVIDIA_API_KEY'),
-});
-
+const GEMINI_MODEL = 'gemini-3-flash-preview';
 const CATEGORY_MAP = new Set([
   'da_rispondere',
   'marketing',
@@ -36,6 +31,28 @@ const defaultTopicStates = {
   pec: true,
   burocrazia: true,
 };
+
+async function callGemini(prompt, generationConfig = {}) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${Deno.env.get('GEMINI_API_KEY')}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: generationConfig.temperature ?? 0,
+        topP: generationConfig.topP ?? 0.95,
+        maxOutputTokens: generationConfig.maxOutputTokens ?? 50,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  const data = await response.json();
+  return data.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('').trim() || '';
+}
 
 function decodeBase64Url(value = '') {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
@@ -162,9 +179,7 @@ async function categorizeEmail(settings, fromEmail, subject, snippet) {
     return 'altro';
   }
 
-  const completion = await withRetry(() => llmClient.chat.completions.create({
-    model: 'minimaxai/minimax-m2.1',
-    messages: [{ role: 'user', content: `Categorizza questa email in italiano.
+  const prompt = `Categorizza questa email in italiano.
 Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.
 
 Regole builder:
@@ -179,13 +194,9 @@ Mittente: ${fromEmail}
 Oggetto: ${subject}
 Anteprima: ${snippet}
 
-Rispondi solo con il nome esatto della categoria.` }],
-    temperature: 0,
-    top_p: 0.95,
-    max_tokens: 50,
-  }));
+Rispondi solo con il nome esatto della categoria.`;
 
-  const candidate = (completion.choices?.[0]?.message?.content || '').trim().toLowerCase();
+  const candidate = (await withRetry(() => callGemini(prompt, { temperature: 0, topP: 0.95, maxOutputTokens: 50 }))).toLowerCase();
   const normalized = CATEGORY_MAP.has(candidate) ? candidate : 'altro';
   return applyTopicState(normalized, settings);
 }
