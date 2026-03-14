@@ -67,15 +67,23 @@ Deno.serve(async (req) => {
       status: 'confirmed',
     });
 
+    let confirmationEmailSent = false;
+    let confirmationEmailError = null;
+
     if (profile.send_confirmation_emails) {
-      await base44.asServiceRole.integrations.Core.SendEmail({
-        to: guestEmail,
-        subject: `Conferma riunione - ${scheduledDate} ${startTime}`,
-        body: `Ciao ${guestName},\n\nla tua riunione è confermata per il ${scheduledDate} alle ${startTime} (${profile.timezone}).\n\nA presto.`,
-      });
+      try {
+        await base44.asServiceRole.integrations.Core.SendEmail({
+          to: guestEmail,
+          subject: `Conferma riunione - ${scheduledDate} ${startTime}`,
+          body: `Ciao ${guestName},\n\nla tua riunione è confermata per il ${scheduledDate} alle ${startTime} (${profile.timezone}).\n\nA presto.`,
+        });
+        confirmationEmailSent = true;
+      } catch (error) {
+        confirmationEmailError = error.message;
+      }
     }
 
-    return Response.json({ booking });
+    return Response.json({ booking, confirmation_email_sent: confirmationEmailSent, confirmation_email_error: confirmationEmailError });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
