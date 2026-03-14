@@ -9,15 +9,23 @@ Deno.serve(async (req) => {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    await base44.functions.invoke('ensureWorkspaceDefaults', {});
-
     const payload = await req.json();
     const settings = await base44.entities.DraftSettings.filter({ user_id: user.id });
-    const existing = settings[0];
-
-    if (!existing) {
-      return Response.json({ error: 'Draft settings not found' }, { status: 404 });
-    }
+    const existing = settings[0] || await base44.entities.DraftSettings.create({
+      user_id: user.id,
+      enable_drafts: true,
+      unused_drafts_days: 14,
+      response_style: 'everything',
+      enable_followups: true,
+      followup_days: 3,
+      custom_tone_enabled: false,
+      custom_tone_text: '',
+      font_family: 'Gmail/Outlook default',
+      font_size: 0,
+      font_color: '#111111',
+      include_signature: true,
+      default_signature: '',
+    });
 
     const updateData = {
       enable_drafts: payload.enable_drafts ?? existing.enable_drafts,
