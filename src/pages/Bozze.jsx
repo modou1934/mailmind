@@ -135,6 +135,12 @@ export default function Bozze() {
     }
   };
 
+  const handleDeleteSignature = async (email) => {
+    await base44.functions.invoke('deleteAccountSignature', { email });
+    setAccountSignatures((prev) => ({ ...prev, [email]: '' }));
+    await loadDraftAssets();
+  };
+
   const handleFileUpload = async (event) => {
     const files = Array.from(event.target.files || []);
     if (files.length === 0) return;
@@ -379,7 +385,10 @@ export default function Bozze() {
                 ) : (
                   accounts.map((account) => (
                     <div key={account.email}>
-                      <div className="text-xs text-brand mb-2">{account.email}</div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs text-brand">{account.email}</div>
+                        <button onClick={() => handleDeleteSignature(account.email)} className="text-xs text-red-500 hover:text-red-600">Elimina firma</button>
+                      </div>
                       <textarea
                         value={accountSignatures[account.email] || ''}
                         onChange={(e) => setAccountSignatures((prev) => ({ ...prev, [account.email]: e.target.value }))}
