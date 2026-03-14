@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
       },
       scheduling: schedulingProfile ? {
         slug: schedulingProfile.slug,
-        url: `https://mailmind.ai/e/${schedulingProfile.slug}/${schedulingProfile.meeting_duration_minutes}`,
+        url: `/book/${schedulingProfile.slug}`,
       } : null,
     });
   } catch (error) {

@@ -22,6 +22,7 @@ import Persone from './pages/settings/Persone';
 import Fatturazione from './pages/settings/Fatturazione';
 import Integrazioni from './pages/settings/Integrazioni';
 import OAuthCallback from './pages/OAuthCallback';
+import BookMeeting from './pages/BookMeeting';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -67,6 +68,7 @@ const AuthenticatedApp = () => {
 
       <Route path="/oauth/google" element={<OAuthCallback />} />
       <Route path="/oauth/microsoft" element={<OAuthCallback />} />
+      <Route path="/book/:slug" element={<BookMeeting />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );

@@ -80,7 +80,7 @@ export default function Dashboard() {
             </div>
             <div className="flex-shrink-0 w-80">
               <div className="flex items-center gap-2 border border-gray-200 rounded-lg overflow-hidden mb-2">
-                <input readOnly value={summary.scheduling?.url || 'https://mailmind.ai/e/utente/30'} className="flex-1 px-3 py-2 text-sm text-gray-600 bg-transparent outline-none truncate" />
+                <input readOnly value={summary.scheduling?.url ? `${window.location.origin}${summary.scheduling.url}` : `${window.location.origin}/book/utente`} className="flex-1 px-3 py-2 text-sm text-gray-600 bg-transparent outline-none truncate" />
                 <button className="flex items-center gap-1.5 bg-brand text-white px-3 py-2 text-sm font-medium hover:bg-brand/90 whitespace-nowrap">
                   <Copy className="w-3.5 h-3.5" /> Copia link <ChevronDown className="w-3 h-3" />
                 </button>

@@ -135,7 +135,7 @@ export default function Pianificazione() {
                 </div>
                 <div className="flex-shrink-0 w-72">
                   <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden mb-2">
-                    <input readOnly value={`https://${link}/${settings.meetingDuration}`} className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
+                    <input readOnly value={`${window.location.origin}/book/${link.replace('mailmind.ai/e/', '')}`} className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
                     <button className="flex items-center gap-1 bg-brand text-white px-2 py-2 text-xs font-medium whitespace-nowrap">
                       <Copy className="w-3 h-3" /> Copia link
                     </button>
