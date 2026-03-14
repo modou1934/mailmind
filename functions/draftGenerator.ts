@@ -1,4 +1,10 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
+import OpenAI from 'npm:openai@4.104.0';
+
+const llmClient = new OpenAI({
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+  apiKey: Deno.env.get('NVIDIA_API_KEY'),
+});
 
 async function resolveUserId(base44, explicitUserId) {
   if (explicitUserId) return explicitUserId;
@@ -31,6 +37,18 @@ async function getSignature(base44, userId, accountEmail) {
   return signatures[0]?.signature_content || '';
 }
 
+async function generateDraftWithNvidia(prompt) {
+  const completion = await llmClient.chat.completions.create({
+    model: 'minimaxai/minimax-m2.1',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.7,
+    top_p: 0.95,
+    max_tokens: 2000,
+  });
+
+  return completion.choices?.[0]?.message?.content?.trim() || '';
+}
+
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
@@ -59,8 +77,7 @@ Deno.serve(async (req) => {
       ? `Istruzioni personalizzate utente: ${settings.custom_tone_text}`
       : 'Nessuna istruzione personalizzata.';
 
-    const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
-      prompt: `Sei un assistente email professionale italiano.
+    const prompt = `Sei un assistente email professionale italiano.
 Scrivi una risposta professionale e concisa a questa email.
 
 Stile risposta utente: ${settings.response_style}
@@ -75,16 +92,9 @@ Oggetto: ${subject}
 Contenuto email:
 ${emailBody}
 
-Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.`,
-      response_json_schema: {
-        type: 'object',
-        properties: {
-          draft_content: { type: 'string' },
-        },
-      },
-    });
+Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.`;
 
-    const draftContent = result?.draft_content;
+    const draftContent = await generateDraftWithNvidia(prompt);
     if (!draftContent) {
       return Response.json({ error: 'AI generation failed' }, { status: 500 });
     }

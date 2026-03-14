@@ -1,4 +1,10 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
+import OpenAI from 'npm:openai@4.104.0';
+
+const llmClient = new OpenAI({
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+  apiKey: Deno.env.get('NVIDIA_API_KEY'),
+});
 
 const CATEGORY_MAP = new Set([
   'da_rispondere',
@@ -103,7 +109,7 @@ function applyTopicState(category, settings) {
   return category;
 }
 
-async function categorizeEmail(base44, settings, fromEmail, subject, snippet) {
+async function categorizeEmail(settings, fromEmail, subject, snippet) {
   const customCategory = passesCustomRules(settings, fromEmail, subject, snippet);
   if (customCategory) {
     return applyTopicState(customCategory, settings);
@@ -127,20 +133,19 @@ Mittente: ${fromEmail}
 Oggetto: ${subject}
 Anteprima: ${snippet}
 
-Rispondi solo con un oggetto JSON con la chiave category.`;
+Rispondi solo con il nome esatto della categoria.`;
 
-  const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
-    prompt,
-    response_json_schema: {
-      type: 'object',
-      properties: {
-        category: { type: 'string' },
-      },
-    },
+  const completion = await llmClient.chat.completions.create({
+    model: 'minimaxai/minimax-m2.1',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0,
+    top_p: 0.95,
+    max_tokens: 50,
   });
 
-  const candidate = CATEGORY_MAP.has(result?.category) ? result.category : 'altro';
-  return applyTopicState(candidate, settings);
+  const candidate = (completion.choices?.[0]?.message?.content || '').trim().toLowerCase();
+  const normalized = CATEGORY_MAP.has(candidate) ? candidate : 'altro';
+  return applyTopicState(normalized, settings);
 }
 
 Deno.serve(async (req) => {
@@ -183,7 +188,7 @@ Deno.serve(async (req) => {
       const { fromName, fromEmail } = parseAddress(from);
       const snippet = msg.snippet || '';
       const body = extractTextFromPayload(msg.payload).slice(0, 5000);
-      const category = await categorizeEmail(base44, inboxSettings, fromEmail, subject, snippet);
+      const category = await categorizeEmail(inboxSettings, fromEmail, subject, snippet);
 
       const createdThread = await base44.asServiceRole.entities.EmailThread.create({
         thread_id: msg.threadId,
