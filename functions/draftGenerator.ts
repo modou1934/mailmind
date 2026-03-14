@@ -79,7 +79,9 @@ async function refreshMicrosoftToken(token) {
 }
 
 async function getMicrosoftAccessToken(base44, userId, accountEmail) {
-  const tokens = await base44.asServiceRole.entities.UserOAuthToken.filter({ user_id: userId, provider: 'microsoft', email: accountEmail });
+  const tokens = accountEmail
+    ? await base44.asServiceRole.entities.UserOAuthToken.filter({ user_id: userId, provider: 'microsoft', email: accountEmail })
+    : await base44.asServiceRole.entities.UserOAuthToken.filter({ user_id: userId, provider: 'microsoft' });
   const token = tokens[0];
   if (!token) throw new Error('Microsoft token not found');
   if (token.expires_at && new Date(token.expires_at).getTime() > Date.now() + 60000) return token.access_token;
@@ -129,10 +131,12 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firm
     const threads = await base44.asServiceRole.entities.EmailThread.filter({ message_id });
     const emailThreadEntity = threads[0] || null;
 
+    const normalizedAccountEmail = provider === 'microsoft' ? null : (account_email || '');
+
     const draftEntity = await base44.asServiceRole.entities.Draft.create({
       user_id: resolvedUserId,
       provider,
-      account_email: account_email || '',
+      account_email: normalizedAccountEmail,
       email_thread_id: emailThreadEntity?.id || thread_id,
       thread_id,
       subject: `Re: ${subject}`,
@@ -145,6 +149,12 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firm
 
     if (provider === 'microsoft') {
       const accessToken = await getMicrosoftAccessToken(base44, resolvedUserId, account_email);
+      const microsoftProfileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const microsoftProfile = microsoftProfileRes.ok ? await microsoftProfileRes.json() : {};
+      const resolvedAccountEmail = account_email || microsoftProfile.mail || microsoftProfile.userPrincipalName || '';
+
       const createDraftRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${message_id}/createReply`, {
         method: 'POST',
         headers: {
@@ -155,6 +165,8 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firm
       if (!createDraftRes.ok) return Response.json({ error: await createDraftRes.text() }, { status: 502 });
       const draftMessage = await createDraftRes.json();
       providerDraftId = draftMessage.id;
+
+      await base44.asServiceRole.entities.Draft.update(draftEntity.id, { account_email: resolvedAccountEmail });
 
       const patchRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${providerDraftId}`, {
         method: 'PATCH',

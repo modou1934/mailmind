@@ -100,6 +100,15 @@ Deno.serve(async (req) => {
     if (!token) return Response.json({ error: 'Microsoft account not connected' }, { status: 404 });
 
     const accessToken = await getMicrosoftAccessToken(base44, token);
+    const profileRes = await fetch('https://graph.microsoft.com/v1.0/me', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const profileData = profileRes.ok ? await profileRes.json() : {};
+    const accountEmail = token.email || profileData.mail || profileData.userPrincipalName || user.email;
+    if (accountEmail !== token.email) {
+      await base44.asServiceRole.entities.UserOAuthToken.update(token.id, { email: accountEmail });
+    }
+
     const inboxSettings = await getInboxSettings(base44, user.id);
     const listRes = await fetch('https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=id,conversationId,subject,from,receivedDateTime,bodyPreview,body,categories', {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -122,7 +131,7 @@ Deno.serve(async (req) => {
       const thread = await base44.asServiceRole.entities.EmailThread.create({
         user_id: user.id,
         provider: 'microsoft',
-        account_email: token.email,
+        account_email: accountEmail,
         thread_id: message.conversationId || message.id,
         message_id: message.id,
         subject: message.subject || 'Senza oggetto',
@@ -139,7 +148,7 @@ Deno.serve(async (req) => {
       if (['da_rispondere', 'contratto'].includes(category) && body) {
         await base44.asServiceRole.functions.invoke('draftGenerator', {
           provider: 'microsoft',
-          account_email: token.email,
+          account_email: accountEmail,
           user_id: user.id,
           thread_id: message.conversationId || message.id,
           message_id: message.id,
