@@ -1,24 +1,68 @@
 import { createClientFromRequest } from 'npm:@base44/sdk@0.8.20';
 
+async function getDraftSettings(base44, userId) {
+  const settings = await base44.asServiceRole.entities.DraftSettings.filter({ user_id: userId });
+  return settings[0] || {
+    enable_drafts: true,
+    response_style: 'everything',
+    enable_followups: true,
+    custom_tone_enabled: false,
+    custom_tone_text: '',
+    include_signature: true,
+    default_signature: '',
+    font_family: 'Gmail/Outlook default',
+    font_size: 0,
+    font_color: '#111111',
+  };
+}
+
+async function getSignature(base44, userId, fromEmail) {
+  const signatures = await base44.asServiceRole.entities.AccountSignature.filter({ user_id: userId, email: fromEmail });
+  return signatures[0]?.signature_content || '';
+}
+
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
     const base44 = createClientFromRequest(req);
-    const { thread_id, message_id, subject, from_email, body: emailBody } = body;
+    const user = await base44.auth.me();
+    if (!user) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
+    const { thread_id, message_id, subject, from_email, body: emailBody } = body;
     if (!thread_id || !emailBody) {
       return Response.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
+    const settings = await getDraftSettings(base44, user.id);
+    if (!settings.enable_drafts) {
+      return Response.json({ skipped: true, reason: 'drafts_disabled' });
+    }
+
+    const accountSignature = await getSignature(base44, user.id, user.email);
+    const signatureToUse = settings.include_signature ? (accountSignature || settings.default_signature || '') : '';
+    const toneInstructions = settings.custom_tone_enabled && settings.custom_tone_text
+      ? `Istruzioni personalizzate utente: ${settings.custom_tone_text}`
+      : 'Nessuna istruzione personalizzata.';
+
     const result = await base44.asServiceRole.integrations.Core.InvokeLLM({
-      prompt: `Sei un assistente email professionale italiano. Scrivi una risposta professionale e concisa a questa email.
+      prompt: `Sei un assistente email professionale italiano.
+Scrivi una risposta professionale e concisa a questa email.
+
+Stile risposta utente: ${settings.response_style}
+${toneInstructions}
+Font preferito: ${settings.font_family}
+Dimensione font: ${settings.font_size}
+Colore font: ${settings.font_color}
+Firma da includere alla fine se appropriato: ${signatureToUse || 'nessuna'}
 
 Da: ${from_email}
 Oggetto: ${subject}
 Contenuto email:
 ${emailBody}
 
-Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Tono professionale e cordiale.`,
+Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.` ,
       response_json_schema: {
         type: 'object',
         properties: {
@@ -41,11 +85,10 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Tono professiona
       subject: `Re: ${subject}`,
       content: draftContent,
       status: 'generata',
-      tone: 'professionale',
+      tone: settings.custom_tone_enabled ? 'personalizzato' : settings.response_style,
     });
 
     const { accessToken } = await base44.asServiceRole.connectors.getConnection('gmail');
-
     const rawMessage = [
       `To: ${from_email}`,
       `Subject: Re: ${subject}`,
@@ -81,7 +124,6 @@ Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Tono professiona
     }
 
     const gmailDraft = await gmailRes.json();
-
     await base44.asServiceRole.entities.Draft.update(draftEntity.id, {
       gmail_draft_id: gmailDraft.id,
       status: 'generata',
