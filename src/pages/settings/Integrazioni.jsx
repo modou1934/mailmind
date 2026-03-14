@@ -23,7 +23,7 @@ export default function Integrazioni() {
   const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
-    base44.auth.me().then(u => setCurrentUser(u)).catch(() => {});
+    base44.auth.me().then(u => setCurrentUser(u)).catch(() => setLoading(false));
   }, []);
 
   const loadAccounts = async () => {
