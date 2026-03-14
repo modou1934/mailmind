@@ -37,6 +37,39 @@ const defaultTopicStates = {
   burocrazia: true,
 };
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url, options = {}, retries = 3) {
+  let lastResponse;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const response = await fetch(url, options);
+    if (response.ok || ![408, 429, 500, 502, 503, 504].includes(response.status) || attempt === retries) {
+      return response;
+    }
+    lastResponse = response;
+    await wait(400 * (2 ** attempt) + Math.floor(Math.random() * 150));
+  }
+  return lastResponse;
+}
+
+async function withRetry(action, retries = 3, baseDelay = 400) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) {
+        throw error;
+      }
+      await wait(baseDelay * (2 ** attempt) + Math.floor(Math.random() * 150));
+    }
+  }
+  throw lastError;
+}
+
 function decodeBase64Url(value = '') {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   return atob(normalized);
@@ -133,7 +166,11 @@ async function categorizeEmail(settings, fromEmail, subject, snippet) {
     return 'altro';
   }
 
-  const prompt = `Categorizza questa email in italiano.
+  const completion = await withRetry(() => llmClient.chat.completions.create({
+    model: 'minimaxai/minimax-m2.1',
+    messages: [{
+      role: 'user',
+      content: `Categorizza questa email in italiano.
 Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.
 
 Regole builder:
@@ -148,15 +185,12 @@ Mittente: ${fromEmail}
 Oggetto: ${subject}
 Anteprima: ${snippet}
 
-Rispondi solo con il nome esatto della categoria.`;
-
-  const completion = await llmClient.chat.completions.create({
-    model: 'minimaxai/minimax-m2.1',
-    messages: [{ role: 'user', content: prompt }],
+Rispondi solo con il nome esatto della categoria.`
+    }],
     temperature: 0,
     top_p: 0.95,
     max_tokens: 50,
-  });
+  }));
 
   const candidate = (completion.choices?.[0]?.message?.content || '').trim().toLowerCase();
   const normalized = CATEGORY_MAP.has(candidate) ? candidate : 'altro';
@@ -174,7 +208,7 @@ function shouldArchiveFromInbox(category, settings) {
 
 async function getLabelMap(accessToken, cache) {
   if (cache.labelMap) return cache.labelMap;
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+  const res = await fetchWithRetry('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) {
@@ -192,7 +226,7 @@ async function ensureMailMindLabel(accessToken, category, cache) {
   const labelMap = await getLabelMap(accessToken, cache);
   if (labelMap[labelName]) return labelMap[labelName];
 
-  const createRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+  const createRes = await fetchWithRetry('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -228,7 +262,7 @@ async function applyMailboxPreferences(accessToken, messageId, labelIds, categor
     return;
   }
 
-  await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+  await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -236,6 +270,35 @@ async function applyMailboxPreferences(accessToken, messageId, labelIds, categor
     },
     body: JSON.stringify({ addLabelIds, removeLabelIds }),
   });
+}
+
+async function upsertThread(base44, payload, settings) {
+  const byMessageId = await base44.asServiceRole.entities.EmailThread.filter({ message_id: payload.message_id });
+  if (byMessageId.length > 0) {
+    return { thread: byMessageId[0], status: 'duplicate_message' };
+  }
+
+  const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ thread_id: payload.thread_id });
+  const existingThread = existingThreads[0] || null;
+
+  if (!existingThread) {
+    const created = await base44.asServiceRole.entities.EmailThread.create(payload);
+    return { thread: created, status: 'created' };
+  }
+
+  const existingDate = existingThread.received_at ? new Date(existingThread.received_at).getTime() : 0;
+  const incomingDate = payload.received_at ? new Date(payload.received_at).getTime() : 0;
+
+  if (incomingDate <= existingDate) {
+    return { thread: existingThread, status: 'older_message' };
+  }
+
+  const updatePayload = settings.respect_existing_categories && existingThread.category
+    ? { ...payload, category: existingThread.category }
+    : payload;
+
+  const updated = await base44.asServiceRole.entities.EmailThread.update(existingThread.id, updatePayload);
+  return { thread: updated, status: 'updated' };
 }
 
 Deno.serve(async (req) => {
@@ -253,7 +316,7 @@ Deno.serve(async (req) => {
     const inboxSettings = await getInboxSettings(base44, user);
     const gmailCache = {};
 
-    const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=-label:SENT -label:DRAFT`, { headers });
+    const listRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=${maxResults}&q=-label:SENT -label:DRAFT`, { headers });
     if (!listRes.ok) {
       return Response.json({ error: await listRes.text() }, { status: 502 });
     }
@@ -261,59 +324,85 @@ Deno.serve(async (req) => {
     const listData = await listRes.json();
     const messages = listData.messages || [];
     const processed = [];
+    const skipped = [];
+    const failed = [];
 
     for (const item of messages) {
-      const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, { headers });
-      if (!msgRes.ok) continue;
-      const msg = await msgRes.json();
-      const labelIds = msg.labelIds || [];
-      if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) continue;
+      try {
+        const msgRes = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`, { headers });
+        if (!msgRes.ok) {
+          failed.push({ message_id: item.id, reason: 'message_fetch_failed' });
+          continue;
+        }
 
-      const existingThreads = await base44.asServiceRole.entities.EmailThread.filter({ message_id: item.id });
-      if (existingThreads.length > 0) continue;
+        const msg = await msgRes.json();
+        const labelIds = msg.labelIds || [];
+        if (labelIds.includes('SENT') || labelIds.includes('DRAFT')) {
+          skipped.push({ message_id: item.id, reason: 'system_label' });
+          continue;
+        }
 
-      const headersList = msg.payload?.headers || [];
-      const getHeader = (name) => headersList.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value || '';
-      const subject = getHeader('Subject');
-      const from = getHeader('From');
-      const { fromName, fromEmail } = parseAddress(from);
-      const snippet = msg.snippet || '';
-      const body = extractTextFromPayload(msg.payload).slice(0, 5000);
-      const category = await categorizeEmail(inboxSettings, fromEmail, subject, snippet);
+        const headersList = msg.payload?.headers || [];
+        const getHeader = (name) => headersList.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value || '';
+        const subject = getHeader('Subject');
+        const from = getHeader('From');
+        const { fromName, fromEmail } = parseAddress(from);
+        const snippet = msg.snippet || '';
+        const body = extractTextFromPayload(msg.payload).slice(0, 5000);
+        const receivedAt = new Date(parseInt(msg.internalDate, 10)).toISOString();
+        const category = await categorizeEmail(inboxSettings, fromEmail, subject, snippet);
 
-      const createdThread = await base44.asServiceRole.entities.EmailThread.create({
-        thread_id: msg.threadId,
-        message_id: item.id,
-        subject,
-        from_email: fromEmail,
-        from_name: fromName,
-        snippet,
-        body,
-        received_at: new Date(parseInt(msg.internalDate, 10)).toISOString(),
-        category,
-        status: 'nuovo',
-        labels: labelIds,
-      });
-
-      await applyMailboxPreferences(accessToken, item.id, labelIds, category, inboxSettings, gmailCache);
-
-      const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category) && body;
-      if (shouldGenerateDraft) {
-        await base44.asServiceRole.functions.invoke('draftGenerator', {
+        const { thread, status } = await upsertThread(base44, {
           thread_id: msg.threadId,
           message_id: item.id,
           subject,
           from_email: fromEmail,
-          body: body.slice(0, 3000),
-          user_id: user.id,
-          account_email: user.email,
-        });
-      }
+          from_name: fromName,
+          snippet,
+          body,
+          received_at: receivedAt,
+          category,
+          status: 'nuovo',
+          labels: labelIds,
+        }, inboxSettings);
 
-      processed.push(createdThread.id);
+        if (status === 'duplicate_message' || status === 'older_message') {
+          skipped.push({ message_id: item.id, reason: status });
+          continue;
+        }
+
+        await applyMailboxPreferences(accessToken, item.id, labelIds, category, inboxSettings, gmailCache);
+
+        const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category)
+          && body
+          && (!thread?.draft_id || thread.message_id !== item.id);
+
+        if (shouldGenerateDraft) {
+          await withRetry(() => base44.asServiceRole.functions.invoke('draftGenerator', {
+            thread_id: msg.threadId,
+            message_id: item.id,
+            subject,
+            from_email: fromEmail,
+            body: body.slice(0, 3000),
+            user_id: user.id,
+            account_email: user.email,
+          }));
+        }
+
+        processed.push(thread.id);
+      } catch (error) {
+        failed.push({ message_id: item.id, reason: error.message });
+      }
     }
 
-    return Response.json({ success: true, processed_count: processed.length, processed_ids: processed });
+    return Response.json({
+      success: true,
+      processed_count: processed.length,
+      processed_ids: processed,
+      skipped_count: skipped.length,
+      failed_count: failed.length,
+      failed,
+    });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
