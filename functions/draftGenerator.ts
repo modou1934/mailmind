@@ -125,7 +125,12 @@ ${emailBody}
 
 Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo. Se i file di riferimento sono utili, tienili in considerazione come contesto operativo.`;
 
-    const draftContent = await callGemini(prompt);
+    let draftContent = '';
+    try {
+      draftContent = await callGemini(prompt);
+    } catch (_) {
+      draftContent = `Ciao,\n\nho ricevuto il tuo messaggio riguardo "${subject}". Ti rispondo a breve con tutti i dettagli necessari.\n\nGrazie per la pazienza.${signatureToUse ? `\n\n${signatureToUse}` : ''}`;
+    }
     if (!draftContent) return Response.json({ error: 'AI generation failed' }, { status: 500 });
 
     const threads = await base44.asServiceRole.entities.EmailThread.filter({ message_id });

@@ -77,6 +77,16 @@ function matchCustomRule(settings, fromEmail, subject, snippet) {
   return null;
 }
 
+function fallbackCategory(fromEmail, subject, snippet) {
+  const text = `${fromEmail} ${subject} ${snippet}`.toLowerCase();
+  if (text.includes('fattura') || text.includes('contratto')) return 'contratto';
+  if (text.includes('newsletter') || text.includes('unsubscribe')) return 'newsletter';
+  if (text.includes('promoz') || text.includes('offerta') || text.includes('sale')) return 'marketing';
+  if (text.includes('reminder') || text.includes('notification') || text.includes('alert')) return 'notifica';
+  if (text.includes('rispondi') || text.includes('reply') || text.includes('meeting')) return 'da_rispondere';
+  return 'altro';
+}
+
 async function categorizeEmail(settings, fromEmail, subject, snippet) {
   const alternativeEmails = Array.isArray(settings.alternative_emails) ? settings.alternative_emails.map(normalizeEmail) : [];
   if (alternativeEmails.includes(normalizeEmail(fromEmail))) return 'da_seguire';
@@ -85,8 +95,12 @@ async function categorizeEmail(settings, fromEmail, subject, snippet) {
   if (!settings.enable_categorization) return 'altro';
 
   const prompt = `Categorizza questa email in italiano. Scegli UNA categoria tra: da_rispondere, marketing, notifica, da_seguire, per_conoscenza, pec, burocrazia, contratto, newsletter, altro.\n\nMittente: ${fromEmail}\nOggetto: ${subject}\nAnteprima: ${snippet}\n\nRispondi solo con il nome esatto della categoria.`;
-  const candidate = (await callGemini(prompt)).toLowerCase();
-  return CATEGORY_MAP.has(candidate) ? candidate : 'altro';
+  try {
+    const candidate = (await callGemini(prompt)).toLowerCase();
+    return CATEGORY_MAP.has(candidate) ? candidate : fallbackCategory(fromEmail, subject, snippet);
+  } catch (_) {
+    return fallbackCategory(fromEmail, subject, snippet);
+  }
 }
 
 Deno.serve(async (req) => {
