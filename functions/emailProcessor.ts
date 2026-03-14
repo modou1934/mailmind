@@ -104,6 +104,10 @@ function extractText(part) {
   return (part.parts || []).map(extractText).join('\n');
 }
 
+function normalizeEmail(email = '') {
+  return String(email).trim().toLowerCase();
+}
+
 function passesCustomRules(settings, fromEmail, subject, snippet) {
   const rules = Array.isArray(settings.custom_rules) ? settings.custom_rules : [];
   const searchable = `${fromEmail} ${subject} ${snippet}`.toLowerCase();
@@ -134,7 +138,17 @@ function applyTopicState(category, settings) {
   return category;
 }
 
+function categoryFromAlternativeEmail(settings, fromEmail) {
+  const alternatives = Array.isArray(settings.alternative_emails) ? settings.alternative_emails.map(normalizeEmail) : [];
+  return alternatives.includes(normalizeEmail(fromEmail)) ? 'da_seguire' : null;
+}
+
 async function categorizeEmail(settings, fromEmail, subject, snippet) {
+  const alternativeCategory = categoryFromAlternativeEmail(settings, fromEmail);
+  if (alternativeCategory) {
+    return applyTopicState(alternativeCategory, settings);
+  }
+
   const customCategory = passesCustomRules(settings, fromEmail, subject, snippet);
   if (customCategory) {
     return applyTopicState(customCategory, settings);
@@ -157,6 +171,7 @@ Regole builder:
 - keep_fyi_in_inbox: ${settings.keep_fyi_in_inbox}
 - respect_existing_categories: ${settings.respect_existing_categories}
 - alternative_emails: ${(settings.alternative_emails || []).join(', ') || 'none'}
+- custom_rules_count: ${(settings.custom_rules || []).length}
 
 Mittente: ${fromEmail}
 Oggetto: ${subject}
@@ -174,6 +189,81 @@ Rispondi solo con il nome esatto della categoria.`
   return applyTopicState(normalized, settings);
 }
 
+function shouldArchiveFromInbox(category, settings) {
+  if (category === 'marketing') return settings.move_marketing_out;
+  if (category === 'notifica') return settings.move_notification_out;
+  if (category === 'da_seguire') return settings.move_follow_up_out;
+  if (category === 'da_rispondere') return !settings.keep_todo_in_inbox;
+  if (category === 'per_conoscenza') return !settings.keep_fyi_in_inbox;
+  return false;
+}
+
+async function getLabelMap(accessToken, cache) {
+  if (cache.labelMap) return cache.labelMap;
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    cache.labelMap = {};
+    return cache.labelMap;
+  }
+  const data = await res.json();
+  cache.labelMap = Object.fromEntries((data.labels || []).map((label) => [label.name, label.id]));
+  return cache.labelMap;
+}
+
+async function ensureMailMindLabel(accessToken, category, cache) {
+  if (!category || category === 'altro') return null;
+  const labelName = `MailMind/${category}`;
+  const labelMap = await getLabelMap(accessToken, cache);
+  if (labelMap[labelName]) return labelMap[labelName];
+
+  const createRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: labelName,
+      labelListVisibility: 'labelShow',
+      messageListVisibility: 'show',
+    }),
+  });
+
+  if (!createRes.ok) return null;
+  const created = await createRes.json();
+  labelMap[labelName] = created.id;
+  return created.id;
+}
+
+async function applyMailboxPreferences(accessToken, messageId, labelIds, category, settings, cache) {
+  const addLabelIds = [];
+  const removeLabelIds = [];
+
+  const labelId = settings.enable_topic_labels ? await ensureMailMindLabel(accessToken, category, cache) : null;
+  if (labelId && !labelIds.includes(labelId)) {
+    addLabelIds.push(labelId);
+  }
+
+  if (shouldArchiveFromInbox(category, settings) && labelIds.includes('INBOX')) {
+    removeLabelIds.push('INBOX');
+  }
+
+  if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
+    return;
+  }
+
+  await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ addLabelIds, removeLabelIds }),
+  });
+}
+
 Deno.serve(async (req) => {
   try {
     const body = await req.json();
@@ -189,6 +279,7 @@ Deno.serve(async (req) => {
     const { settings, userId } = await getInboxSettings(base44, accountEmail);
     const { accessToken } = await base44.asServiceRole.connectors.getConnection('gmail');
     const authHeader = { Authorization: `Bearer ${accessToken}` };
+    const gmailCache = {};
 
     const syncStates = await base44.asServiceRole.entities.SyncState.list();
     const syncRecord = syncStates.find((item) => (item.account_email || '') === accountEmail) || null;
@@ -265,6 +356,8 @@ Deno.serve(async (req) => {
         } else {
           threadRecord = await base44.asServiceRole.entities.EmailThread.create(threadPayload);
         }
+
+        await applyMailboxPreferences(accessToken, msgId, labelIds, category, settings, gmailCache);
 
         const shouldGenerateDraft = ['da_rispondere', 'contratto'].includes(category)
           && bodyText

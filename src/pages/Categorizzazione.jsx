@@ -29,10 +29,26 @@ const topicLabels = [
   { id: 'burocrazia', label: 'burocrazia', desc: 'PA, fisco, enti pubblici e comunicazioni ufficiali.', enabled: true },
 ];
 
+const categoryOptions = [
+  { id: 'da_rispondere', label: 'Da rispondere' },
+  { id: 'marketing', label: 'Marketing' },
+  { id: 'notifica', label: 'Notifica' },
+  { id: 'da_seguire', label: 'Da seguire' },
+  { id: 'per_conoscenza', label: 'Per conoscenza' },
+  { id: 'pec', label: 'PEC' },
+  { id: 'burocrazia', label: 'Burocrazia' },
+  { id: 'contratto', label: 'Contratto' },
+  { id: 'newsletter', label: 'Newsletter' },
+  { id: 'altro', label: 'Altro' },
+];
+
 export default function Categorizzazione() {
   const [tab, setTab] = useState('general');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newAlternativeEmail, setNewAlternativeEmail] = useState('');
+  const [newRulePattern, setNewRulePattern] = useState('');
+  const [newRuleCategory, setNewRuleCategory] = useState('da_rispondere');
   const [settings, setSettings] = useState({
     moveOut: { notification: true, followUp: true, marketing: true },
     keepIn: { todo: false, fyi: false },
@@ -40,7 +56,9 @@ export default function Categorizzazione() {
     topicLabels: true,
     enableCategorization: true,
     marketingFilter: 'cold_unknown',
-    topicStates: Object.fromEntries(topicLabels.map(l => [l.id, l.enabled])),
+    topicStates: Object.fromEntries(topicLabels.map((label) => [label.id, label.enabled])),
+    alternativeEmails: [],
+    customRules: [],
   });
 
   useEffect(() => {
@@ -68,6 +86,8 @@ export default function Categorizzazione() {
             ...Object.fromEntries(topicLabels.map((label) => [label.id, label.enabled])),
             ...(remote.topic_states || {}),
           },
+          alternativeEmails: remote.alternative_emails || [],
+          customRules: remote.custom_rules || [],
         });
       })
       .finally(() => {
@@ -93,6 +113,8 @@ export default function Categorizzazione() {
         enable_categorization: settings.enableCategorization,
         marketing_filter_mode: settings.marketingFilter,
         topic_states: settings.topicStates,
+        alternative_emails: settings.alternativeEmails,
+        custom_rules: settings.customRules,
       });
     } finally {
       setSaving(false);
@@ -100,9 +122,41 @@ export default function Categorizzazione() {
   };
 
   const toggle = (path, key) => {
-    setSettings(prev => ({
+    setSettings((prev) => ({
       ...prev,
-      [path]: { ...prev[path], [key]: !prev[path][key] }
+      [path]: { ...prev[path], [key]: !prev[path][key] },
+    }));
+  };
+
+  const addAlternativeEmail = () => {
+    const email = newAlternativeEmail.trim().toLowerCase();
+    if (!email || settings.alternativeEmails.includes(email)) return;
+    setSettings((prev) => ({ ...prev, alternativeEmails: [...prev.alternativeEmails, email] }));
+    setNewAlternativeEmail('');
+  };
+
+  const removeAlternativeEmail = (email) => {
+    setSettings((prev) => ({
+      ...prev,
+      alternativeEmails: prev.alternativeEmails.filter((item) => item !== email),
+    }));
+  };
+
+  const addCustomRule = () => {
+    const pattern = newRulePattern.trim();
+    if (!pattern) return;
+    setSettings((prev) => ({
+      ...prev,
+      customRules: [...prev.customRules, { pattern, category: newRuleCategory }],
+    }));
+    setNewRulePattern('');
+    setNewRuleCategory('da_rispondere');
+  };
+
+  const removeCustomRule = (index) => {
+    setSettings((prev) => ({
+      ...prev,
+      customRules: prev.customRules.filter((_, currentIndex) => currentIndex !== index),
     }));
   };
 
@@ -121,22 +175,21 @@ export default function Categorizzazione() {
 
       <div className="px-6 pt-5">
         <div className="flex gap-2 border-b border-gray-200 mb-6">
-          {['general', 'advanced'].map(t => (
+          {['general', 'advanced'].map((currentTab) => (
             <button
-              key={t}
-              onClick={() => setTab(t)}
+              key={currentTab}
+              onClick={() => setTab(currentTab)}
               className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                tab === t ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
+                tab === currentTab ? 'border-gray-900 text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
-              {t === 'general' ? 'Generale' : 'Avanzate'}
+              {currentTab === 'general' ? 'Generale' : 'Avanzate'}
             </button>
           ))}
         </div>
 
         {tab === 'general' && (
           <div className="grid grid-cols-2 gap-6 max-w-4xl">
-            {/* Move out */}
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-4">Rimuovi dalla mia Inbox</h3>
               <div className="space-y-4">
@@ -144,7 +197,7 @@ export default function Categorizzazione() {
                   { key: 'notification', color: 'bg-green-400', label: 'Notifica', desc: 'Notifiche di strumenti automatizzati' },
                   { key: 'followUp', color: 'bg-blue-400', label: 'Da seguire', desc: 'In attesa della loro risposta' },
                   { key: 'marketing', color: 'bg-pink-400', label: 'Marketing', desc: 'Email di vendita e marketing' },
-                ].map(item => (
+                ].map((item) => (
                   <div key={item.key} className="flex items-center justify-between">
                     <div className="flex items-start gap-2">
                       <div className={`w-3 h-3 rounded-full ${item.color} mt-0.5 flex-shrink-0`} />
@@ -159,14 +212,13 @@ export default function Categorizzazione() {
               </div>
             </div>
 
-            {/* Keep in */}
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-4">Mantieni nella mia Inbox</h3>
               <div className="space-y-4">
                 {[
                   { key: 'todo', color: 'bg-red-400', label: 'Da fare', desc: 'Richiede la tua azione o risposta' },
                   { key: 'fyi', color: 'bg-orange-400', label: 'Per conoscenza', desc: 'Importante, non richiede risposta' },
-                ].map(item => (
+                ].map((item) => (
                   <div key={item.key} className="flex items-center justify-between">
                     <div className="flex items-start gap-2">
                       <div className={`w-3 h-3 rounded-full ${item.color} mt-0.5 flex-shrink-0`} />
@@ -181,7 +233,6 @@ export default function Categorizzazione() {
               </div>
             </div>
 
-            {/* Existing categories */}
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-4">Categorie esistenti</h3>
               <div className="flex items-center justify-between">
@@ -189,18 +240,17 @@ export default function Categorizzazione() {
                   <div className="text-sm font-medium text-gray-900">Rispetta le mie categorie</div>
                   <div className="text-xs text-brand">Non ordineremo le email già etichettate</div>
                 </div>
-                <Toggle checked={settings.respectExisting} onChange={v => setSettings(p => ({ ...p, respectExisting: v }))} />
+                <Toggle checked={settings.respectExisting} onChange={(value) => setSettings((prev) => ({ ...prev, respectExisting: value }))} />
               </div>
             </div>
 
-            {/* Topic-based labels */}
             <div className="col-span-2 bg-cream rounded-xl border border-gray-200 p-5">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <div className="text-sm font-semibold text-gray-900">Etichette basate su argomento</div>
                   <div className="text-xs text-brand">Permetti a MailMind AI di categorizzare le email dei sistemi automatizzati per argomento.</div>
                 </div>
-                <Toggle checked={settings.topicLabels} onChange={v => setSettings(p => ({ ...p, topicLabels: v }))} />
+                <Toggle checked={settings.topicLabels} onChange={(value) => setSettings((prev) => ({ ...prev, topicLabels: value }))} />
               </div>
               <div className="border-t border-gray-200 pt-4">
                 <div className="grid grid-cols-3 text-xs font-medium text-gray-500 mb-2 px-1">
@@ -209,13 +259,13 @@ export default function Categorizzazione() {
                   <span>Descrizione</span>
                 </div>
                 <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                  {topicLabels.map(label => (
+                  {topicLabels.map((label) => (
                     <div key={label.id} className="grid grid-cols-3 items-center py-1.5 border-b border-gray-100 last:border-0">
                       <Toggle
                         checked={settings.topicStates[label.id]}
-                        onChange={v => setSettings(p => ({
-                          ...p,
-                          topicStates: { ...p.topicStates, [label.id]: v }
+                        onChange={(value) => setSettings((prev) => ({
+                          ...prev,
+                          topicStates: { ...prev.topicStates, [label.id]: value },
                         }))}
                       />
                       <span className={`text-sm font-medium ${['pec', 'burocrazia', 'cold outreach'].includes(label.label) ? 'text-brand' : 'text-gray-700'}`}>
@@ -242,7 +292,7 @@ export default function Categorizzazione() {
                   <div className="text-sm font-medium text-gray-900">Abilita</div>
                   <div className="text-xs text-brand">Attiva o disattiva la categorizzazione globalmente.</div>
                 </div>
-                <Toggle checked={settings.enableCategorization} onChange={v => setSettings(p => ({ ...p, enableCategorization: v }))} />
+                <Toggle checked={settings.enableCategorization} onChange={(value) => setSettings((prev) => ({ ...prev, enableCategorization: value }))} />
               </div>
             </div>
 
@@ -254,16 +304,16 @@ export default function Categorizzazione() {
                   { id: 'cold_unknown', label: 'Cold email e mittenti sconosciuti' },
                   { id: 'cold_newsletter', label: 'Cold email, mittenti sconosciuti e newsletter' },
                   { id: 'all', label: 'Tutto ciò che non è direttamente utile al mio lavoro' },
-                ].map(opt => (
-                  <label key={opt.id} className="flex items-center gap-2 cursor-pointer">
+                ].map((option) => (
+                  <label key={option.id} className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="marketing"
-                      checked={settings.marketingFilter === opt.id}
-                      onChange={() => setSettings(p => ({ ...p, marketingFilter: opt.id }))}
+                      checked={settings.marketingFilter === option.id}
+                      onChange={() => setSettings((prev) => ({ ...prev, marketingFilter: option.id }))}
                       className="text-brand"
                     />
-                    <span className="text-sm text-gray-700">{opt.label}</span>
+                    <span className="text-sm text-gray-700">{option.label}</span>
                   </label>
                 ))}
               </div>
@@ -272,19 +322,69 @@ export default function Categorizzazione() {
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Email alternative</h3>
               <p className="text-xs text-gray-500 mb-3">
-                Le email da cui invii saranno etichettate come Eseguito o In attesa di risposta.
+                Le email da cui invii saranno trattate come indirizzi tuoi aggiuntivi e aiuteranno MailMind AI a riconoscere meglio i follow-up.
               </p>
-              <button className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-gray-900 font-medium">
-                + Aggiungi email
-              </button>
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={newAlternativeEmail}
+                  onChange={(event) => setNewAlternativeEmail(event.target.value)}
+                  placeholder="alias@azienda.com"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white"
+                />
+                <button onClick={addAlternativeEmail} className="px-3 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-white">
+                  Aggiungi
+                </button>
+              </div>
+              <div className="space-y-2">
+                {settings.alternativeEmails.length === 0 ? (
+                  <p className="text-xs text-gray-400">Nessuna email alternativa configurata</p>
+                ) : settings.alternativeEmails.map((email) => (
+                  <div key={email} className="flex items-center justify-between bg-white border border-gray-100 rounded-lg px-3 py-2 text-sm text-gray-700">
+                    <span>{email}</span>
+                    <button onClick={() => removeAlternativeEmail(email)} className="text-xs text-red-500 hover:text-red-600">Rimuovi</button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Regole personalizzate</h3>
-              <p className="text-xs text-gray-500 mb-3">Scegli quali indirizzi o domini vanno in ogni categoria.</p>
-              <button className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-gray-900 font-medium">
-                + Aggiungi email o dominio
-              </button>
+              <p className="text-xs text-gray-500 mb-3">Scegli quali indirizzi, domini o parole chiave fanno scattare una categoria precisa.</p>
+              <div className="space-y-2 mb-4">
+                <input
+                  value={newRulePattern}
+                  onChange={(event) => setNewRulePattern(event.target.value)}
+                  placeholder="es. @fornitore.it oppure fattura"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white"
+                />
+                <div className="flex gap-2">
+                  <select
+                    value={newRuleCategory}
+                    onChange={(event) => setNewRuleCategory(event.target.value)}
+                    className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white"
+                  >
+                    {categoryOptions.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                  <button onClick={addCustomRule} className="px-3 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-white">
+                    Aggiungi
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {settings.customRules.length === 0 ? (
+                  <p className="text-xs text-gray-400">Nessuna regola personalizzata</p>
+                ) : settings.customRules.map((rule, index) => (
+                  <div key={`${rule.pattern}-${index}`} className="flex items-center justify-between bg-white border border-gray-100 rounded-lg px-3 py-2 text-sm text-gray-700 gap-3">
+                    <div>
+                      <div className="font-medium">{rule.pattern}</div>
+                      <div className="text-xs text-brand">{categoryOptions.find((option) => option.id === rule.category)?.label || rule.category}</div>
+                    </div>
+                    <button onClick={() => removeCustomRule(index)} className="text-xs text-red-500 hover:text-red-600">Rimuovi</button>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
