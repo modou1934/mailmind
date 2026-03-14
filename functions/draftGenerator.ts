@@ -37,6 +37,11 @@ async function getSignature(base44, userId, accountEmail) {
   return signatures[0]?.signature_content || '';
 }
 
+async function getReferenceFiles(base44, userId) {
+  const files = await base44.asServiceRole.entities.ReferenceFile.filter({ user_id: userId });
+  return files.slice(0, 8).map((file) => `- ${file.file_name} (${file.file_type || 'file'})`).join('\n');
+}
+
 async function generateDraftWithNvidia(prompt) {
   const completion = await llmClient.chat.completions.create({
     model: 'minimaxai/minimax-m2.1',
@@ -72,6 +77,7 @@ Deno.serve(async (req) => {
     const signatureToUse = settings.include_signature
       ? (await getSignature(base44, resolvedUserId, account_email || '')) || settings.default_signature || ''
       : '';
+    const referenceFiles = await getReferenceFiles(base44, resolvedUserId);
 
     const toneInstructions = settings.custom_tone_enabled && settings.custom_tone_text
       ? `Istruzioni personalizzate utente: ${settings.custom_tone_text}`
@@ -86,13 +92,15 @@ Font preferito: ${settings.font_family}
 Dimensione font: ${settings.font_size}
 Colore font: ${settings.font_color}
 Firma da includere alla fine se appropriato: ${signatureToUse || 'nessuna'}
+File di riferimento disponibili:
+${referenceFiles || '- nessun file di riferimento'}
 
 Da: ${from_email}
 Oggetto: ${subject}
 Contenuto email:
 ${emailBody}
 
-Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo.`;
+Scrivi SOLO il corpo della risposta in italiano, senza oggetto. Se c'è una firma, inseriscila in fondo. Se i file di riferimento sono utili, tienili in considerazione come contesto operativo.`;
 
     const draftContent = await generateDraftWithNvidia(prompt);
     if (!draftContent) {
