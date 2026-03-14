@@ -6,17 +6,13 @@ function getEmailDomain(email) {
 
 async function resolveOrganization(base44, user) {
   const own = await base44.entities.OrganizationSettings.filter({ owner_user_id: user.id });
-  if (own.length > 0) {
-    return own[0];
-  }
+  if (own.length > 0) return own[0];
 
   const domain = getEmailDomain(user.email);
   if (domain) {
     const domainMatches = await base44.asServiceRole.entities.OrganizationSettings.filter({ organization_domain: domain });
     const autoJoinable = domainMatches.find((item) => item.auto_add_by_domain);
-    if (autoJoinable) {
-      return autoJoinable;
-    }
+    if (autoJoinable) return autoJoinable;
   }
 
   return await base44.entities.OrganizationSettings.create({
@@ -30,40 +26,58 @@ async function resolveOrganization(base44, user) {
   });
 }
 
+function normalizeInvites(payload) {
+  if (Array.isArray(payload.invites)) {
+    return payload.invites
+      .map((invite) => ({ email: String(invite.email || '').trim().toLowerCase(), role: invite.role === 'admin' ? 'admin' : 'user' }))
+      .filter((invite) => invite.email);
+  }
+  if (Array.isArray(payload.emails)) {
+    return [...new Set(payload.emails.map((email) => String(email).trim().toLowerCase()).filter(Boolean))].map((email) => ({ email, role: 'user' }));
+  }
+  return [];
+}
+
 Deno.serve(async (req) => {
   try {
     const base44 = createClientFromRequest(req);
     const user = await base44.auth.me();
-
-    if (!user) {
-      return Response.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
     const organization = await resolveOrganization(base44, user);
     const payload = await req.json();
-    const emails = Array.isArray(payload.emails) ? [...new Set(payload.emails.map((email) => email.trim().toLowerCase()).filter(Boolean))] : [];
-
-    if (emails.length === 0) {
-      return Response.json({ invites: [] });
-    }
+    const invites = normalizeInvites(payload);
+    if (invites.length === 0) return Response.json({ invites: [] });
 
     const existing = await base44.asServiceRole.entities.PendingInvite.filter({ organization_owner_user_id: organization.owner_user_id });
-    const existingEmails = new Set(existing.filter((item) => item.status === 'pending').map((item) => item.invited_email.toLowerCase()));
-    const toCreate = emails.filter((email) => !existingEmails.has(email));
+    const results = [];
 
-    const invites = toCreate.length > 0
-      ? await base44.asServiceRole.entities.PendingInvite.bulkCreate(
-          toCreate.map((email) => ({
-            invited_email: email,
-            role: 'user',
-            status: 'pending',
-            invited_by_user_id: user.id,
-            organization_owner_user_id: organization.owner_user_id,
-          }))
-        )
-      : [];
+    for (const invite of invites) {
+      if (invite.role === 'admin' && user.role !== 'admin') {
+        continue;
+      }
 
-    return Response.json({ invites });
+      const existingInvite = existing.find((item) => item.invited_email?.toLowerCase() === invite.email);
+      if (existingInvite) {
+        const updated = await base44.asServiceRole.entities.PendingInvite.update(existingInvite.id, {
+          role: invite.role,
+          status: 'pending',
+          invited_by_user_id: user.id,
+        });
+        results.push(updated);
+      } else {
+        const created = await base44.asServiceRole.entities.PendingInvite.create({
+          invited_email: invite.email,
+          role: invite.role,
+          status: 'pending',
+          invited_by_user_id: user.id,
+          organization_owner_user_id: organization.owner_user_id,
+        });
+        results.push(created);
+      }
+    }
+
+    return Response.json({ invites: results });
   } catch (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
