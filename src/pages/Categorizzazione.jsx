@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { base44 } from '@/api/base44Client';
 
 const Toggle = ({ checked, onChange }) => (
   <button
@@ -30,6 +31,8 @@ const topicLabels = [
 
 export default function Categorizzazione() {
   const [tab, setTab] = useState('general');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState({
     moveOut: { notification: true, followUp: true, marketing: true },
     keepIn: { todo: false, fyi: false },
@@ -39,6 +42,62 @@ export default function Categorizzazione() {
     marketingFilter: 'cold_unknown',
     topicStates: Object.fromEntries(topicLabels.map(l => [l.id, l.enabled])),
   });
+
+  useEffect(() => {
+    let active = true;
+
+    base44.functions.invoke('getInboxSettings', {})
+      .then((res) => {
+        if (!active || !res.data?.settings) return;
+        const remote = res.data.settings;
+        setSettings({
+          moveOut: {
+            notification: remote.move_notification_out,
+            followUp: remote.move_follow_up_out,
+            marketing: remote.move_marketing_out,
+          },
+          keepIn: {
+            todo: remote.keep_todo_in_inbox,
+            fyi: remote.keep_fyi_in_inbox,
+          },
+          respectExisting: remote.respect_existing_categories,
+          topicLabels: remote.enable_topic_labels,
+          enableCategorization: remote.enable_categorization,
+          marketingFilter: remote.marketing_filter_mode,
+          topicStates: {
+            ...Object.fromEntries(topicLabels.map((label) => [label.id, label.enabled])),
+            ...(remote.topic_states || {}),
+          },
+        });
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveInboxSettings', {
+        move_notification_out: settings.moveOut.notification,
+        move_follow_up_out: settings.moveOut.followUp,
+        move_marketing_out: settings.moveOut.marketing,
+        keep_todo_in_inbox: settings.keepIn.todo,
+        keep_fyi_in_inbox: settings.keepIn.fyi,
+        respect_existing_categories: settings.respectExisting,
+        enable_topic_labels: settings.topicLabels,
+        enable_categorization: settings.enableCategorization,
+        marketing_filter_mode: settings.marketingFilter,
+        topic_states: settings.topicStates,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const toggle = (path, key) => {
     setSettings(prev => ({
@@ -51,8 +110,12 @@ export default function Categorizzazione() {
     <div className="h-full overflow-auto">
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
         <h1 className="text-base font-semibold text-gray-900">Categorizzazione</h1>
-        <button className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium">
-          Aggiorna preferenze
+        <button
+          onClick={handleSave}
+          disabled={loading || saving}
+          className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium disabled:opacity-50"
+        >
+          {loading ? 'Caricamento...' : saving ? 'Salvataggio...' : 'Aggiorna preferenze'}
         </button>
       </div>
 

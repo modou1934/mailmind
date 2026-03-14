@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { base44 } from '@/api/base44Client';
 
 const Toggle = ({ checked, onChange }) => (
   <button
@@ -26,6 +27,8 @@ const Counter = ({ value, onChange, min = 1, max = 30 }) => (
 
 export default function Bozze() {
   const [tab, setTab] = useState('general');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState({
     enableDrafts: true,
     unusedDraftsDays: 14,
@@ -45,12 +48,70 @@ export default function Bozze() {
 
   const [showUploadModal, setShowUploadModal] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+
+    base44.functions.invoke('getDraftSettings', {})
+      .then((res) => {
+        if (!active || !res.data?.settings) return;
+        const remote = res.data.settings;
+        setSettings((prev) => ({
+          ...prev,
+          enableDrafts: remote.enable_drafts,
+          unusedDraftsDays: remote.unused_drafts_days,
+          responseStyle: remote.response_style,
+          enableFollowUps: remote.enable_followups,
+          followUpDays: remote.followup_days,
+          customTone: remote.custom_tone_enabled,
+          customToneText: remote.custom_tone_text || '',
+          fontFamily: remote.font_family,
+          fontSize: remote.font_size,
+          fontColor: remote.font_color,
+          includeSignature: remote.include_signature,
+          defaultSignature: remote.default_signature || '',
+        }));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveDraftSettings', {
+        enable_drafts: settings.enableDrafts,
+        unused_drafts_days: settings.unusedDraftsDays,
+        response_style: settings.responseStyle,
+        enable_followups: settings.enableFollowUps,
+        followup_days: settings.followUpDays,
+        custom_tone_enabled: settings.customTone,
+        custom_tone_text: settings.customToneText,
+        font_family: settings.fontFamily,
+        font_size: settings.fontSize,
+        font_color: settings.fontColor,
+        include_signature: settings.includeSignature,
+        default_signature: settings.defaultSignature,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="h-full overflow-auto">
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
         <h1 className="text-base font-semibold text-gray-900">Bozze</h1>
-        <button className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium">
-          Aggiorna preferenze
+        <button
+          onClick={handleSave}
+          disabled={loading || saving}
+          className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium disabled:opacity-50"
+        >
+          {loading ? 'Caricamento...' : saving ? 'Salvataggio...' : 'Aggiorna preferenze'}
         </button>
       </div>
 
