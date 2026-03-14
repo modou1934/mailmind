@@ -1,12 +1,80 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, X } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
+import { useToast } from '@/components/ui/use-toast';
 
 export default function Persone() {
   const [tab, setTab] = useState('members');
+  const [loading, setLoading] = useState(true);
+  const [submittingInvites, setSubmittingInvites] = useState(false);
+  const [creatingTeam, setCreatingTeam] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [showCreateTeam, setShowCreateTeam] = useState(false);
   const [inviteEmails, setInviteEmails] = useState(['']);
   const [teamName, setTeamName] = useState('');
+  const [members, setMembers] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [selectedMemberIds, setSelectedMemberIds] = useState([]);
+  const { toast } = useToast();
+
+  const loadWorkspace = async () => {
+    setLoading(true);
+    try {
+      const res = await base44.functions.invoke('getWorkspacePeople', {});
+      setMembers(res.data?.members || []);
+      setTeams(res.data?.teams || []);
+      setInvites(res.data?.invites || []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadWorkspace();
+  }, []);
+
+  const handleSendInvites = async () => {
+    const emails = inviteEmails.map((email) => email.trim()).filter(Boolean);
+    if (emails.length === 0) {
+      return;
+    }
+
+    setSubmittingInvites(true);
+    try {
+      for (const email of emails) {
+        await base44.users.inviteUser(email, 'user');
+      }
+      await base44.functions.invoke('recordWorkspaceInvites', { emails });
+      setShowInvite(false);
+      setInviteEmails(['']);
+      await loadWorkspace();
+      toast({ title: 'Inviti inviati' });
+    } finally {
+      setSubmittingInvites(false);
+    }
+  };
+
+  const handleCreateTeam = async () => {
+    if (!teamName.trim()) {
+      return;
+    }
+
+    setCreatingTeam(true);
+    try {
+      await base44.functions.invoke('createWorkspaceTeam', {
+        name: teamName,
+        member_user_ids: selectedMemberIds,
+      });
+      setShowCreateTeam(false);
+      setTeamName('');
+      setSelectedMemberIds([]);
+      await loadWorkspace();
+      toast({ title: 'Team creato' });
+    } finally {
+      setCreatingTeam(false);
+    }
+  };
 
   return (
     <div className="h-full">
@@ -34,16 +102,24 @@ export default function Persone() {
             </div>
             <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
               <div className="bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-500">Membri</div>
-              <div className="px-4 py-4 flex items-center gap-3">
-                <div className="w-9 h-9 rounded-full bg-brand/10 text-brand flex items-center justify-center font-bold">U</div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-gray-900">Il tuo nome</span>
-                    <span className="text-xs bg-gray-900 text-white px-2 py-0.5 rounded font-medium">TU</span>
+              {loading ? (
+                <div className="px-4 py-6 text-sm text-gray-400">Caricamento membri...</div>
+              ) : members.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-brand">Nessun membro trovato</div>
+              ) : (
+                members.map((member) => (
+                  <div key={member.id} className="px-4 py-4 flex items-center gap-3 border-t border-gray-50 first:border-t-0">
+                    <div className="w-9 h-9 rounded-full bg-brand/10 text-brand flex items-center justify-center font-bold">{(member.full_name || member.email).slice(0,1).toUpperCase()}</div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-900">{member.full_name}</span>
+                        {member.is_owner && <span className="text-xs bg-gray-900 text-white px-2 py-0.5 rounded font-medium">TU</span>}
+                      </div>
+                      <div className="text-xs text-gray-500">{member.role} · {member.email}</div>
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500">Super admin · utente@gmail.com</div>
-                </div>
-              </div>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -60,7 +136,21 @@ export default function Persone() {
               </button>
             </div>
             <div className="bg-white rounded-xl border border-gray-100 p-8 text-center">
-              <p className="text-sm text-brand">Nessun team ancora. Creane uno per iniziare.</p>
+              {loading ? (
+                <p className="text-sm text-gray-400">Caricamento team...</p>
+              ) : teams.length === 0 ? (
+                <p className="text-sm text-brand">Nessun team ancora. Creane uno per iniziare.</p>
+              ) : (
+                <div className="space-y-3 text-left">
+                  {teams.map((team) => (
+                    <div key={team.id} className="border border-gray-100 rounded-xl p-4">
+                      <div className="text-sm font-semibold text-gray-900">{team.name}</div>
+                      <div className="text-xs text-gray-500 mt-1">{team.member_count} membri</div>
+                      {team.member_names?.length > 0 && <div className="text-xs text-brand mt-2">{team.member_names.join(', ')}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -78,9 +168,20 @@ export default function Persone() {
             </div>
             <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
               <div className="bg-gray-50 px-4 py-2 text-xs font-semibold text-gray-500">Inviti</div>
-              <div className="px-4 py-6 text-center">
-                <p className="text-sm text-brand">Nessun invito in sospeso</p>
-              </div>
+              {loading ? (
+                <div className="px-4 py-6 text-center text-sm text-gray-400">Caricamento inviti...</div>
+              ) : invites.length === 0 ? (
+                <div className="px-4 py-6 text-center">
+                  <p className="text-sm text-brand">Nessun invito in sospeso</p>
+                </div>
+              ) : (
+                invites.map((invite) => (
+                  <div key={invite.id} className="px-4 py-4 border-t border-gray-50 first:border-t-0">
+                    <div className="text-sm font-medium text-gray-900">{invite.invited_email}</div>
+                    <div className="text-xs text-gray-500">{invite.status} · ruolo {invite.role}</div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -124,7 +225,7 @@ export default function Persone() {
             </div>
             <div className="bg-gray-50 -mx-6 -mb-6 px-6 py-4 rounded-b-2xl flex items-center justify-end gap-3">
               <button onClick={() => setShowInvite(false)} className="text-sm text-gray-500 px-3 py-2">Annulla</button>
-              <button className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold">Invia Inviti</button>
+              <button onClick={handleSendInvites} disabled={submittingInvites} className="bg-brand text-white px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50">{submittingInvites ? 'Invio...' : 'Invia Inviti'}</button>
             </div>
           </div>
         </div>
@@ -145,11 +246,22 @@ export default function Persone() {
             </div>
             <div className="mb-4">
               <div className="text-sm font-medium text-gray-700 mb-1">Membri</div>
-              <p className="text-xs text-gray-400">Clicca su un membro per aggiungerlo o rimuoverlo dal team</p>
+              <p className="text-xs text-gray-400 mb-3">Clicca su un membro per aggiungerlo o rimuoverlo dal team</p>
+              <div className="space-y-2 max-h-48 overflow-auto">
+                {members.map((member) => (
+                  <button
+                    key={member.id}
+                    onClick={() => setSelectedMemberIds((prev) => prev.includes(member.id) ? prev.filter((id) => id !== member.id) : [...prev, member.id])}
+                    className={`w-full text-left border rounded-lg px-3 py-2 text-sm ${selectedMemberIds.includes(member.id) ? 'border-brand bg-brand/5 text-brand' : 'border-gray-200 text-gray-700'}`}
+                  >
+                    {member.full_name} <span className="text-xs text-gray-400">· {member.email}</span>
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex items-center justify-end gap-3">
               <button onClick={() => setShowCreateTeam(false)} className="text-sm text-gray-500">Annulla</button>
-              <button disabled={!teamName} className={`px-4 py-2 rounded-lg text-sm font-medium ${teamName ? 'text-brand' : 'text-gray-300 cursor-not-allowed'}`}>Crea team</button>
+              <button onClick={handleCreateTeam} disabled={!teamName || creatingTeam} className={`px-4 py-2 rounded-lg text-sm font-medium ${teamName ? 'text-brand' : 'text-gray-300 cursor-not-allowed'}`}>{creatingTeam ? 'Creazione...' : 'Crea team'}</button>
             </div>
           </div>
         </div>

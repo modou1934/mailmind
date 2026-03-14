@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
+import { base44 } from '@/api/base44Client';
 
 const Toggle = ({ checked, onChange }) => (
   <button onClick={() => onChange(!checked)} className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}>
@@ -8,12 +9,62 @@ const Toggle = ({ checked, onChange }) => (
 );
 
 export default function Organizzazione() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [isOwner, setIsOwner] = useState(true);
   const [settings, setSettings] = useState({ autoAdd: true, discoverable: true });
   const [orgName, setOrgName] = useState('Il mio Studio');
   const [orgDomain, setOrgDomain] = useState('');
 
+  useEffect(() => {
+    let active = true;
+
+    base44.functions.invoke('getOrganizationSettings', {})
+      .then((res) => {
+        if (!active || !res.data?.organization) return;
+        const organization = res.data.organization;
+        setOrgName(organization.organization_name || 'Il mio Studio');
+        setOrgDomain(organization.organization_domain || '');
+        setSettings({
+          autoAdd: organization.auto_add_by_domain,
+          discoverable: organization.discoverable,
+        });
+        setIsOwner(Boolean(res.data.is_owner));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await base44.functions.invoke('saveOrganizationSettings', {
+        organization_name: orgName,
+        organization_domain: orgDomain,
+        auto_add_by_domain: settings.autoAdd,
+        discoverable: settings.discoverable,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="px-8 py-6 max-w-2xl space-y-4">
+      <div className="flex justify-end">
+        <button
+          onClick={handleSave}
+          disabled={loading || saving || !isOwner}
+          className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium disabled:opacity-50"
+        >
+          {loading ? 'Caricamento...' : saving ? 'Salvataggio...' : isOwner ? 'Aggiorna preferenze' : 'Solo il proprietario può modificare'}
+        </button>
+      </div>
       <div className="bg-[#f5f0e8] rounded-xl p-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <span className="text-lg">👥</span>
@@ -32,11 +83,11 @@ export default function Organizzazione() {
         <div className="space-y-3">
           <div>
             <div className="text-xs text-gray-500 mb-1 border border-gray-100 px-2 py-0.5 rounded inline-block">Nome Organizzazione</div>
-            <input value={orgName} onChange={e => setOrgName(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1" />
+            <input disabled={!isOwner} value={orgName} onChange={e => setOrgName(e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 disabled:bg-gray-50" />
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1 border border-gray-100 px-2 py-0.5 rounded inline-block">Dominio Organizzazione</div>
-            <input value={orgDomain} onChange={e => setOrgDomain(e.target.value)} placeholder="esempio.com" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1" />
+            <input disabled={!isOwner} value={orgDomain} onChange={e => setOrgDomain(e.target.value)} placeholder="esempio.com" className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mt-1 disabled:bg-gray-50" />
             <p className="text-xs text-gray-400 mt-1">I colleghi con questo dominio email possono entrare automaticamente nell'organizzazione.</p>
           </div>
         </div>
@@ -53,7 +104,7 @@ export default function Organizzazione() {
               <div className="text-sm font-medium text-gray-900">{item.label}</div>
               <div className={`text-xs ${item.highlight ? 'text-brand' : 'text-gray-500'}`}>{item.desc}</div>
             </div>
-            <Toggle checked={settings[item.key]} onChange={v => setSettings(s => ({ ...s, [item.key]: v }))} />
+            <Toggle checked={settings[item.key]} onChange={v => isOwner && setSettings(s => ({ ...s, [item.key]: v }))} />
           </div>
         ))}
       </div>
