@@ -46,7 +46,7 @@ export default function Integrazioni() {
     const redirect_uri = `https://cherubic-mail-mind-flow.base44.app/oauth/${providerPath}`;
 
     try {
-      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri, user_id: currentUser?.id });
+      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri });
       const authUrl = res.data.url;
 
       const popup = window.open(authUrl, 'oauth', 'width=500,height=700,left=200,top=100');
