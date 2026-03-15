@@ -1,57 +1,59 @@
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
-  addConversationMessage,
-  consumeOauthState,
+  addConversationMessageRuntime,
   createAuditLog,
-  createConversation,
-  createInvite,
-  createMeetingSession,
-  createMeetingUploadSession,
-  categorizeMailbox,
-  createDraftForThread,
-  createOauthState,
-  createSession,
-  createTeam,
-  deleteConnectedAccount,
-  deleteDraftRecord,
-  deleteSession,
-  findConnectedAccountByProviderEmail,
-  findConnectedAccountByWebhookSubscriptionId,
-  generateDraftsForPendingThreads,
-  getBillingSummary,
-  getDashboard,
-  listMailSyncStates,
-  listSyncRuns,
-  listWebhookSubscriptions,
-  getWebhookSubscription,
-  getOrCreateDevUser,
-  getSession,
-  getSetting,
-  listDraftRecords,
-  listMailThreads,
-  getWorkspaceSummary,
-  listConnectedAccounts,
-  listConversationMessages,
-  listConversations,
-  listCalendarEvents,
-  listInvites,
-  listMeetingSessions,
-  listTeams,
-  listWorkspaceMembers,
+  createConversationRuntime,
+  createInviteRuntime,
+  createMeetingSessionRuntime,
+  createMeetingUploadSessionRuntime,
+  categorizeMailboxRuntime,
+  createDraftForThreadRuntime,
+  createOauthStateRuntime,
+  createSessionRuntime,
+  createTeamRuntime,
+  deleteConnectedAccountRuntime,
+  deleteDraftRecordRuntime,
+  deleteSessionRuntime,
+  findConnectedAccountByIdRuntime,
+  findConnectedAccountByProviderEmailRuntime,
+  findConnectedAccountByWebhookSubscriptionIdRuntime,
+  generateDraftsForPendingThreadsRuntime,
+  getBillingSummaryRuntime,
+  getDashboardRuntime,
+  getOrCreateDevUserRuntime,
+  getSessionRuntime,
+  getSettingRuntime,
+  getWorkspaceSummaryRuntime,
+  getWebhookSubscriptionRuntime,
+  listMailSyncStatesRuntime,
+  listSyncRunsRuntime,
+  listWebhookSubscriptionsRuntime,
+  listDraftRecordsRuntime,
+  listMailThreadsRuntime,
+  listConnectedAccountsRuntime,
+  listConversationMessagesRuntime,
+  listConversationsRuntime,
+  listCalendarEventsRuntime,
+  listInvitesRuntime,
+  listMeetingSessionsRuntime,
+  listTeamsRuntime,
+  listWorkspaceMembersRuntime,
   maintainWebhookSubscriptions,
-  processMeetingSession,
-  pushDraftRecord,
-  setSetting,
-  syncCalendar,
-  syncMailbox,
-  upsertConnectedAccount,
-  updateWorkspaceSummary,
+  processMeetingSessionRuntime,
+  pushDraftRecordRuntime,
+  setSettingRuntime,
+  syncCalendarRuntime,
+  syncMailboxRuntime,
+  upsertConnectedAccountRuntime,
+  updateWorkspaceSummaryRuntime,
+  consumeOauthStateRuntime,
 } from "./db.js";
 import { encryptString } from "./crypto.js";
 import { generateTextWithGemini, getGeminiRuntimeStatus, hasGeminiCredentials } from "./gemini.js";
 import { buildProviderAuthUrl, exchangeOAuthCode, fetchProviderProfile, hasProviderCredentials } from "./oauth.js";
 import { clearCookie, corsHeaders, empty, json, parseCookies, readJson, setCookie, text } from "./http.js";
+import { getPostgresRuntimeStatus } from "./postgres.js";
 import { getStorageRuntimeStatus } from "./storage.js";
 import { hasDeepgramCredentials } from "./transcription.js";
 
@@ -264,18 +266,18 @@ function assertRateLimit(req, scope, { windowMs, maxRequests }) {
   rateLimitStore.set(key, timestamps);
 }
 
-function authPayload(context) {
+async function authPayload(context) {
   return {
     id: context.user.id,
     email: context.user.email,
     full_name: context.user.full_name,
-    workspace: getWorkspaceSummary(context.user.id),
+    workspace: await getWorkspaceSummaryRuntime(context.user.id),
   };
 }
 
-function ensureContext(req, res) {
+async function ensureContext(req, res) {
   const cookies = parseCookies(req);
-  const existing = getSession(cookies[SESSION_COOKIE]);
+  const existing = await getSessionRuntime(cookies[SESSION_COOKIE]);
   if (existing) {
     ensureCsrfCookie(req, res);
     return existing;
@@ -285,8 +287,8 @@ function ensureContext(req, res) {
     return null;
   }
 
-  const { user, workspace } = getOrCreateDevUser();
-  const session = createSession(user.id);
+  const { user, workspace } = await getOrCreateDevUserRuntime();
+  const session = await createSessionRuntime(user.id);
   setCookie(res, SESSION_COOKIE, session.id, {
     maxAge: 60 * 60 * 24 * 30,
     secure: isSecureFrontend,
@@ -557,6 +559,7 @@ const server = createServer(async (req, res) => {
 
     if (route.pattern === "/api/health") {
       const gemini = getGeminiRuntimeStatus();
+      const postgres = await getPostgresRuntimeStatus();
       json(res, 200, {
         status: "ok",
         private: true,
@@ -565,6 +568,7 @@ const server = createServer(async (req, res) => {
           microsoftOAuth: hasProviderCredentials("microsoft"),
           deepgram: hasDeepgramCredentials(),
           storage: getStorageRuntimeStatus(),
+          postgres,
           gemini,
         },
       }, baseCorsHeaders);
@@ -572,21 +576,21 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/auth/me") {
-      const context = ensureContext(req, res);
+      const context = await ensureContext(req, res);
       if (!context) {
         ensureCsrfCookie(req, res);
         json(res, 401, { error: "Unauthorized" }, baseCorsHeaders);
         return;
       }
-      json(res, 200, { user: authPayload(context) }, baseCorsHeaders);
+      json(res, 200, { user: await authPayload(context) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/auth/logout") {
       const cookies = parseCookies(req);
       if (cookies[SESSION_COOKIE]) {
-        const sessionContext = getSession(cookies[SESSION_COOKIE]);
-        deleteSession(cookies[SESSION_COOKIE]);
+        const sessionContext = await getSessionRuntime(cookies[SESSION_COOKIE]);
+        await deleteSessionRuntime(cookies[SESSION_COOKIE]);
         if (sessionContext) {
           createAuditLog({
             userId: sessionContext.user.id,
@@ -623,7 +627,7 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const account = findConnectedAccountByProviderEmail("google", payload.emailAddress || "");
+      const account = await findConnectedAccountByProviderEmailRuntime("google", payload.emailAddress || "");
       if (!account) {
         json(res, 202, { accepted: true }, baseCorsHeaders);
         return;
@@ -654,12 +658,12 @@ const server = createServer(async (req, res) => {
       const scheduledAccounts = new Set();
 
       for (const notification of notifications) {
-        const account = findConnectedAccountByWebhookSubscriptionId("microsoft", notification.subscriptionId || "");
+        const account = await findConnectedAccountByWebhookSubscriptionIdRuntime("microsoft", notification.subscriptionId || "");
         if (!account || scheduledAccounts.has(account.id)) {
           continue;
         }
 
-        const subscription = getWebhookSubscription(account.id);
+        const subscription = await getWebhookSubscriptionRuntime(account.id);
         if (subscription?.client_state && notification.clientState && subscription.client_state !== notification.clientState) {
           continue;
         }
@@ -674,35 +678,35 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const context = ensureContext(req, res);
+    const context = await ensureContext(req, res);
     if (!context) {
       json(res, 401, { error: "Unauthorized" }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/dashboard") {
-      json(res, 200, getDashboard(context.user.id), baseCorsHeaders);
+      json(res, 200, await getDashboardRuntime(context.user.id), baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/workspace" && req.method === "GET") {
-      json(res, 200, getWorkspaceSummary(context.user.id), baseCorsHeaders);
+      json(res, 200, await getWorkspaceSummaryRuntime(context.user.id), baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/workspace" && req.method === "PATCH") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      json(res, 200, updateWorkspaceSummary(context.user.id, body), baseCorsHeaders);
+      json(res, 200, await updateWorkspaceSummaryRuntime(context.user.id, body), baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/workspace/members") {
-      json(res, 200, { members: listWorkspaceMembers(context.workspace.id) }, baseCorsHeaders);
+      json(res, 200, { members: await listWorkspaceMembersRuntime(context.workspace.id) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/workspace/teams" && req.method === "GET") {
-      json(res, 200, { teams: listTeams(context.workspace.id) }, baseCorsHeaders);
+      json(res, 200, { teams: await listTeamsRuntime(context.workspace.id) }, baseCorsHeaders);
       return;
     }
 
@@ -712,12 +716,12 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "Team name required" }, baseCorsHeaders);
         return;
       }
-      json(res, 201, { team: createTeam(context.workspace.id, body.name.trim()) }, baseCorsHeaders);
+      json(res, 201, { team: await createTeamRuntime(context.workspace.id, body.name.trim()) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/workspace/invites" && req.method === "GET") {
-      json(res, 200, { invites: listInvites(context.workspace.id) }, baseCorsHeaders);
+      json(res, 200, { invites: await listInvitesRuntime(context.workspace.id) }, baseCorsHeaders);
       return;
     }
 
@@ -730,26 +734,26 @@ const server = createServer(async (req, res) => {
       json(
         res,
         201,
-        { invite: createInvite(context.workspace.id, body.email.trim(), body.role || "member") },
+        { invite: await createInviteRuntime(context.workspace.id, body.email.trim(), body.role || "member") },
         baseCorsHeaders,
       );
       return;
     }
 
     if (route.pattern === "/api/integrations/accounts" && req.method === "GET") {
-      const threads = listMailThreads(context.user.id);
-      const drafts = listDraftRecords(context.user.id);
-      const syncStates = new Map(listMailSyncStates(context.user.id).map((state) => [state.connected_account_id, state]));
-      const subscriptions = new Map(listWebhookSubscriptions(context.user.id).map((item) => [item.connected_account_id, item]));
+      const threads = await listMailThreadsRuntime(context.user.id);
+      const drafts = await listDraftRecordsRuntime(context.user.id);
+      const syncStates = new Map((await listMailSyncStatesRuntime(context.user.id)).map((state) => [state.connected_account_id, state]));
+      const subscriptions = new Map((await listWebhookSubscriptionsRuntime(context.user.id)).map((item) => [item.connected_account_id, item]));
       const latestSyncRuns = new Map();
 
-      for (const run of listSyncRuns(context.user.id)) {
+      for (const run of await listSyncRunsRuntime(context.user.id)) {
         if (!latestSyncRuns.has(run.connected_account_id)) {
           latestSyncRuns.set(run.connected_account_id, run);
         }
       }
 
-      const accounts = listConnectedAccounts(context.user.id).map((account) => formatAccountDiagnostics(
+      const accounts = (await listConnectedAccountsRuntime(context.user.id)).map((account) => formatAccountDiagnostics(
         account,
         threads,
         drafts,
@@ -777,7 +781,7 @@ const server = createServer(async (req, res) => {
 
       const state = randomUUID();
       const expiresAt = new Date(Date.now() + 1000 * 60 * 10).toISOString();
-      createOauthState({
+      await createOauthStateRuntime({
         state,
         workspaceId: context.workspace.id,
         userId: context.user.id,
@@ -807,7 +811,7 @@ const server = createServer(async (req, res) => {
     if (route.pattern === "/api/integrations/oauth/:provider/callback") {
       const { provider } = route.params;
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const stateRow = consumeOauthState(body.state, provider);
+      const stateRow = await consumeOauthStateRuntime(body.state, provider);
 
       if (!stateRow) {
         createAuditLog({
@@ -828,7 +832,7 @@ const server = createServer(async (req, res) => {
       });
       const profile = await fetchProviderProfile(provider, tokenData.access_token);
 
-      const account = upsertConnectedAccount({
+      const account = await upsertConnectedAccountRuntime({
         workspaceId: stateRow.workspace_id,
         userId: stateRow.user_id,
         provider,
@@ -862,8 +866,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/integrations/accounts/:id" && req.method === "DELETE") {
-      const account = listConnectedAccounts(context.user.id).find((item) => item.id === route.params.id) || null;
-      const deleted = deleteConnectedAccount(context.user.id, route.params.id);
+      const account = await findConnectedAccountByIdRuntime(route.params.id);
+      const deleted = await deleteConnectedAccountRuntime(context.user.id, route.params.id);
       if (!deleted) {
         json(res, 404, { error: "Account not found" }, baseCorsHeaders);
         return;
@@ -887,7 +891,7 @@ const server = createServer(async (req, res) => {
 
     if (route.pattern === "/api/calendar/sync" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const result = await syncCalendar(context.user.id, body.accountId || null, {
+      const result = await syncCalendarRuntime(context.user.id, body.accountId || null, {
         timeMin: body.timeMin || "",
         timeMax: body.timeMax || "",
         maxResults: body.maxResults || undefined,
@@ -901,7 +905,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/calendar/events" && req.method === "GET") {
-      const result = listCalendarEvents(context.user.id, {
+      const result = await listCalendarEventsRuntime(context.user.id, {
         from: url.searchParams.get("from") || "",
         to: url.searchParams.get("to") || "",
         accountId: url.searchParams.get("accountId") || null,
@@ -914,7 +918,7 @@ const server = createServer(async (req, res) => {
 
     if (route.pattern === "/api/mail/sync" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const result = await syncMailbox(context.user.id, body.accountId || null);
+      const result = await syncMailboxRuntime(context.user.id, body.accountId || null);
       if (result.syncedAccounts === 0) {
         json(res, 400, { error: "Connect at least one email account before syncing" }, baseCorsHeaders);
         return;
@@ -925,7 +929,7 @@ const server = createServer(async (req, res) => {
 
     if (route.pattern === "/api/mail/categorize" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: 25 * 1024 * 1024 });
-      const result = await categorizeMailbox(context.user.id, {
+      const result = await categorizeMailboxRuntime(context.user.id, {
         accountId: body.accountId || null,
         threadId: body.threadId || null,
       });
@@ -934,19 +938,19 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/mail/threads" && req.method === "GET") {
-      json(res, 200, { threads: listMailThreads(context.user.id) }, baseCorsHeaders);
+      json(res, 200, { threads: await listMailThreadsRuntime(context.user.id) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/drafts" && req.method === "GET") {
-      json(res, 200, { drafts: listDraftRecords(context.user.id) }, baseCorsHeaders);
+      json(res, 200, { drafts: await listDraftRecordsRuntime(context.user.id) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/drafts/generate" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
       if (body.threadId) {
-        const draft = await createDraftForThread(context.user.id, body.threadId);
+        const draft = await createDraftForThreadRuntime(context.user.id, body.threadId);
         if (!draft) {
           json(res, 404, { error: "Thread not found" }, baseCorsHeaders);
           return;
@@ -955,7 +959,7 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const drafts = await generateDraftsForPendingThreads(context.user.id);
+      const drafts = await generateDraftsForPendingThreadsRuntime(context.user.id);
       json(res, 201, {
         drafts,
         created: drafts.length,
@@ -966,7 +970,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/drafts/:id/push" && req.method === "POST") {
-      const draft = await pushDraftRecord(context.user.id, route.params.id);
+      const draft = await pushDraftRecordRuntime(context.user.id, route.params.id);
       if (!draft) {
         json(res, 404, { error: "Draft not found" }, baseCorsHeaders);
         return;
@@ -976,7 +980,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/drafts/:id" && req.method === "DELETE") {
-      const deleted = await deleteDraftRecord(context.user.id, route.params.id);
+      const deleted = await deleteDraftRecordRuntime(context.user.id, route.params.id);
       if (!deleted) {
         json(res, 404, { error: "Draft not found" }, baseCorsHeaders);
         return;
@@ -986,13 +990,13 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/notetaker/sessions" && req.method === "GET") {
-      json(res, 200, { sessions: listMeetingSessions(context.user.id) }, baseCorsHeaders);
+      json(res, 200, { sessions: await listMeetingSessionsRuntime(context.user.id) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/notetaker/sessions/record" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const session = await createMeetingSession(context.user.id, {
+      const session = await createMeetingSessionRuntime(context.user.id, {
         sourceType: "record",
         calendarEventId: body.calendarEventId || "",
         title: body.title || "",
@@ -1010,7 +1014,7 @@ const server = createServer(async (req, res) => {
         json(res, 400, { error: "Meeting URL or linked calendar event required" }, baseCorsHeaders);
         return;
       }
-      const session = await createMeetingSession(context.user.id, {
+      const session = await createMeetingSessionRuntime(context.user.id, {
         sourceType: "join",
         calendarEventId: body.calendarEventId || "",
         title: body.title || "",
@@ -1040,7 +1044,7 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const session = await createMeetingUploadSession(context.user.id, {
+      const session = await createMeetingUploadSessionRuntime(context.user.id, {
         calendarEventId: body.calendarEventId || "",
         title: body.title || "",
         meetingUrl: body.meetingUrl || "",
@@ -1057,7 +1061,7 @@ const server = createServer(async (req, res) => {
 
     if (route.pattern === "/api/notetaker/sessions/:id/process" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const session = await processMeetingSession(context.user.id, route.params.id, body.transcriptText || "");
+      const session = await processMeetingSessionRuntime(context.user.id, route.params.id, body.transcriptText || "");
       if (!session) {
         json(res, 404, { error: "Meeting session not found" }, baseCorsHeaders);
         return;
@@ -1067,35 +1071,35 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/settings/:key" && req.method === "GET") {
-      const value = getSetting(route.params.key);
+      const value = await getSettingRuntime(route.params.key);
       json(res, 200, { value }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/settings/:key" && req.method === "PUT") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      json(res, 200, { value: setSetting(route.params.key, body) }, baseCorsHeaders);
+      json(res, 200, { value: await setSettingRuntime(route.params.key, body) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/billing/summary") {
-      json(res, 200, getBillingSummary(), baseCorsHeaders);
+      json(res, 200, await getBillingSummaryRuntime(), baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/chat/conversations" && req.method === "GET") {
-      json(res, 200, { conversations: listConversations(context.user.id) }, baseCorsHeaders);
+      json(res, 200, { conversations: await listConversationsRuntime(context.user.id) }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/chat/conversations" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      json(res, 201, { conversation: createConversation(context.user.id, body.title || "Nuova chat") }, baseCorsHeaders);
+      json(res, 201, { conversation: await createConversationRuntime(context.user.id, body.title || "Nuova chat") }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/chat/conversations/:id/messages" && req.method === "GET") {
-      json(res, 200, { messages: listConversationMessages(route.params.id) }, baseCorsHeaders);
+      json(res, 200, { messages: await listConversationMessagesRuntime(route.params.id) }, baseCorsHeaders);
       return;
     }
 
@@ -1106,9 +1110,9 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const userMessage = addConversationMessage(route.params.id, "user", body.content.trim());
+      const userMessage = await addConversationMessageRuntime(route.params.id, "user", body.content.trim());
       const reply = await assistantReply(body.content);
-      const assistantMessage = addConversationMessage(route.params.id, "assistant", reply);
+      const assistantMessage = await addConversationMessageRuntime(route.params.id, "assistant", reply);
       json(res, 201, { userMessage, assistantMessage }, baseCorsHeaders);
       return;
     }

@@ -44,6 +44,8 @@ npm run db:verify:postgres
 ```
 
 L'entrypoint SQL usato dal bootstrap e in `postgres/001_init.sql`.
+Se vuoi mantenere allineati i dati core anche durante il runtime SQLite attuale, imposta `POSTGRES_MIRROR_ENABLED=true` in `./.env`: il backend fara dual-write su Postgres per sessioni, workspace, settings, connected accounts e audit log, e lo stato verra esposto in `/api/health`.
+Se vuoi usare Postgres come primary store per i moduli core gia migrati (`auth`, `workspace`, `settings`, `connected accounts`, `oauth state`), imposta `POSTGRES_PRIMARY_ENABLED=true`. Il resto del backend continua a mantenere SQLite allineato finche non completiamo la migrazione totale.
 
 ## File principali
 

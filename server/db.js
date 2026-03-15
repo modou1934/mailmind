@@ -5,6 +5,16 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { classifyMailThreads } from "./mailClassifier.js";
 import { generateJsonWithGemini, generateTextWithGemini, hasGeminiCredentials } from "./gemini.js";
+import {
+  deletePostgresRecords,
+  deletePostgresRecordsByColumnValues,
+  isPostgresMirrorEnabled,
+  isPostgresPrimaryEnabled,
+  queryPostgres,
+  queuePostgresMirror,
+  upsertPostgresRecord,
+  withPostgresTransaction,
+} from "./postgres.js";
 import { putStoredObject } from "./storage.js";
 import { transcribeAudioBuffer } from "./transcription.js";
 import {
@@ -531,6 +541,87 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function queuePostgresUpsert(label, tableName, record, conflictColumns = ["id"]) {
+  if (!record) {
+    return;
+  }
+
+  queuePostgresMirror(label, (postgres) => upsertPostgresRecord(postgres, tableName, record, conflictColumns));
+}
+
+function queuePostgresDelete(label, tableName, filters = {}) {
+  queuePostgresMirror(label, (postgres) => deletePostgresRecords(postgres, tableName, filters));
+}
+
+async function queryPostgresRow(sql, values = []) {
+  const result = await queryPostgres(sql, values);
+  return result.rows[0] || null;
+}
+
+async function queryPostgresRows(sql, values = []) {
+  const result = await queryPostgres(sql, values);
+  return result.rows;
+}
+
+async function upsertPostgresNow(tableName, record, conflictColumns = ["id"]) {
+  if (!record) {
+    return;
+  }
+
+  await withPostgresTransaction(async (postgres) => {
+    await upsertPostgresRecord(postgres, tableName, record, conflictColumns);
+  });
+}
+
+function postgresPrimaryEnabled() {
+  return isPostgresPrimaryEnabled();
+}
+
+function listSqliteRowsByValues(tableName, columnName, values = []) {
+  const filteredValues = values.filter((value) => value !== undefined && value !== null && value !== "");
+  if (filteredValues.length === 0) {
+    return [];
+  }
+
+  const placeholders = filteredValues.map(() => "?").join(", ");
+  return db.prepare(`
+    SELECT *
+    FROM ${tableName}
+    WHERE ${columnName} IN (${placeholders})
+  `).all(...filteredValues);
+}
+
+function queueCorePostgresSnapshot() {
+  if (!isPostgresMirrorEnabled() && !postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const snapshots = [
+    { tableName: "users", rows: db.prepare("SELECT * FROM users").all(), conflictColumns: ["id"] },
+    { tableName: "workspaces", rows: db.prepare("SELECT * FROM workspaces").all(), conflictColumns: ["id"] },
+    { tableName: "workspace_members", rows: db.prepare("SELECT * FROM workspace_members").all(), conflictColumns: ["id"] },
+    { tableName: "sessions", rows: db.prepare("SELECT * FROM sessions").all(), conflictColumns: ["id"] },
+    { tableName: "teams", rows: db.prepare("SELECT * FROM teams").all(), conflictColumns: ["id"] },
+    { tableName: "team_members", rows: db.prepare("SELECT * FROM team_members").all(), conflictColumns: ["id"] },
+    { tableName: "invites", rows: db.prepare("SELECT * FROM invites").all(), conflictColumns: ["id"] },
+    { tableName: "connected_accounts", rows: db.prepare("SELECT * FROM connected_accounts").all(), conflictColumns: ["id"] },
+    { tableName: "mail_sync_state", rows: db.prepare("SELECT * FROM mail_sync_state").all(), conflictColumns: ["connected_account_id"] },
+    { tableName: "webhook_subscriptions", rows: db.prepare("SELECT * FROM webhook_subscriptions").all(), conflictColumns: ["connected_account_id"] },
+    { tableName: "oauth_states", rows: db.prepare("SELECT * FROM oauth_states").all(), conflictColumns: ["state"] },
+    { tableName: "settings", rows: db.prepare("SELECT * FROM settings").all(), conflictColumns: ["key"] },
+    { tableName: "notifications", rows: db.prepare("SELECT * FROM notifications").all(), conflictColumns: ["id"] },
+    { tableName: "audit_logs", rows: db.prepare("SELECT * FROM audit_logs").all(), conflictColumns: ["id"] },
+  ];
+
+  queuePostgresMirror("startup.core_snapshot", async (postgres) => {
+    for (const snapshot of snapshots) {
+      for (const row of snapshot.rows) {
+        await upsertPostgresRecord(postgres, snapshot.tableName, row, snapshot.conflictColumns);
+      }
+    }
+  });
+}
+
 function calendarSyncWindow({ timeMin = "", timeMax = "", maxResults } = {}) {
   return {
     timeMin: timeMin || new Date(Date.now() - CALENDAR_SYNC_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString(),
@@ -673,8 +764,14 @@ function evaluateDraftEligibility(thread, classification = null) {
 function ensureSetting(key, value) {
   const row = db.prepare("SELECT key FROM settings WHERE key = ?").get(key);
   if (!row) {
+    const updatedAt = nowIso();
     db.prepare("INSERT INTO settings (key, json_value, updated_at) VALUES (?, ?, ?)")
-      .run(key, JSON.stringify(value), nowIso());
+      .run(key, JSON.stringify(value), updatedAt);
+    queuePostgresUpsert("settings.seed", "settings", {
+      key,
+      json_value: JSON.stringify(value),
+      updated_at: updatedAt,
+    }, ["key"]);
   }
 }
 
@@ -689,6 +786,7 @@ function ensureDefaultData() {
     db.prepare("INSERT INTO users (id, email, full_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
       .run(userId, email, fullName, now, now);
     user = db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    queuePostgresUpsert("users.seed", "users", user, ["id"]);
   }
 
   let workspace = db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").get(user.id);
@@ -699,6 +797,11 @@ function ensureDefaultData() {
     db.prepare("INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(randomUUID(), workspaceId, user.id, "owner", now);
     workspace = db.prepare("SELECT * FROM workspaces WHERE id = ?").get(workspaceId);
+    const workspaceMember = db.prepare("SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?").get(workspaceId, user.id);
+    queuePostgresMirror("workspaces.seed", async (postgres) => {
+      await upsertPostgresRecord(postgres, "workspaces", workspace, ["id"]);
+      await upsertPostgresRecord(postgres, "workspace_members", workspaceMember, ["id"]);
+    });
   }
 
   ensureSetting("organization", defaultOrganization);
@@ -714,15 +817,41 @@ function ensureDefaultData() {
       "INSERT INTO notifications (id, user_id, title, body, link, read_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
     for (const item of defaultDashboardNotifications) {
-      insert.run(randomUUID(), user.id, item.title, item.body, item.link, "", now);
+      const notificationId = randomUUID();
+      insert.run(notificationId, user.id, item.title, item.body, item.link, "", now);
+      queuePostgresUpsert("notifications.seed", "notifications", {
+        id: notificationId,
+        user_id: user.id,
+        title: item.title,
+        body: item.body,
+        link: item.link,
+        read_at: "",
+        created_at: now,
+      }, ["id"]);
     }
   }
 }
 
 ensureDefaultData();
+queueCorePostgresSnapshot();
 
 export function listNotifications(userId) {
   return db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC").all(userId);
+}
+
+export async function listNotificationsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listNotifications(userId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC",
+      [userId],
+    );
+  } catch {
+    return listNotifications(userId);
+  }
 }
 
 export function getOrCreateDevUser() {
@@ -746,11 +875,17 @@ export function getSetting(key, fallback = null) {
 
 export function setSetting(key, value) {
   const now = nowIso();
+  const jsonValue = JSON.stringify(value);
   db.prepare(`
     INSERT INTO settings (key, json_value, updated_at)
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET json_value = excluded.json_value, updated_at = excluded.updated_at
-  `).run(key, JSON.stringify(value), now);
+  `).run(key, jsonValue, now);
+  queuePostgresUpsert("settings.upsert", "settings", {
+    key,
+    json_value: jsonValue,
+    updated_at: now,
+  }, ["key"]);
   return value;
 }
 
@@ -760,6 +895,12 @@ export function createSession(userId) {
   const expires = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 30);
   db.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
     .run(id, userId, expires.toISOString(), now.toISOString());
+  queuePostgresUpsert("sessions.create", "sessions", {
+    id,
+    user_id: userId,
+    expires_at: expires.toISOString(),
+    created_at: now.toISOString(),
+  }, ["id"]);
   return { id, expiresAt: expires.toISOString() };
 }
 
@@ -773,6 +914,7 @@ export function getSession(sessionId) {
   }
   if (new Date(session.expires_at) <= new Date()) {
     db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+    queuePostgresDelete("sessions.expire", "sessions", { id: sessionId });
     return null;
   }
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(session.user_id);
@@ -782,6 +924,7 @@ export function getSession(sessionId) {
 
 export function deleteSession(sessionId) {
   db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+  queuePostgresDelete("sessions.delete", "sessions", { id: sessionId });
 }
 
 export function createAuditLog({
@@ -813,6 +956,8 @@ export function createAuditLog({
     JSON.stringify(metadata || {}),
     nowIso(),
   );
+  const row = db.prepare("SELECT * FROM audit_logs WHERE id = ?").get(id);
+  queuePostgresUpsert("audit_logs.create", "audit_logs", row, ["id"]);
 
   return id;
 }
@@ -834,8 +979,45 @@ function findCalendarEventById(userId, calendarEventId) {
   `).get(userId, calendarEventId);
 }
 
+async function findCalendarEventByIdRuntime(userId, calendarEventId) {
+  if (!calendarEventId) {
+    return null;
+  }
+
+  if (!postgresPrimaryEnabled()) {
+    return findCalendarEventById(userId, calendarEventId);
+  }
+
+  try {
+    const row = await queryPostgresRow(`
+      SELECT ce.*, ca.email AS account_email, ca.display_name AS account_display_name
+      FROM calendar_events ce
+      LEFT JOIN connected_accounts ca ON ca.id = ce.connected_account_id
+      WHERE ce.user_id = $1 AND ce.id = $2
+    `, [userId, calendarEventId]);
+    return row || findCalendarEventById(userId, calendarEventId);
+  } catch {
+    return findCalendarEventById(userId, calendarEventId);
+  }
+}
+
 export function listMailSyncStates(userId) {
   return db.prepare("SELECT * FROM mail_sync_state WHERE user_id = ? ORDER BY updated_at DESC").all(userId);
+}
+
+export async function listMailSyncStatesRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listMailSyncStates(userId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM mail_sync_state WHERE user_id = $1 ORDER BY updated_at DESC",
+      [userId],
+    );
+  } catch {
+    return listMailSyncStates(userId);
+  }
 }
 
 export function listWebhookSubscriptions(userId) {
@@ -848,6 +1030,24 @@ export function listWebhookSubscriptions(userId) {
   `).all(userId);
 }
 
+export async function listWebhookSubscriptionsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listWebhookSubscriptions(userId);
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT ws.*
+      FROM webhook_subscriptions ws
+      JOIN connected_accounts ca ON ca.id = ws.connected_account_id
+      WHERE ca.user_id = $1
+      ORDER BY ws.updated_at DESC
+    `, [userId]);
+  } catch {
+    return listWebhookSubscriptions(userId);
+  }
+}
+
 export function listSyncRuns(userId) {
   return db.prepare(`
     SELECT *
@@ -855,6 +1055,23 @@ export function listSyncRuns(userId) {
     WHERE user_id = ?
     ORDER BY created_at DESC
   `).all(userId);
+}
+
+export async function listSyncRunsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listSyncRuns(userId);
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT *
+      FROM sync_runs
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `, [userId]);
+  } catch {
+    return listSyncRuns(userId);
+  }
 }
 
 export function upsertConnectedAccount({
@@ -880,7 +1097,9 @@ export function upsertConnectedAccount({
       SET display_name = ?, external_account_id = ?, encrypted_access_token = ?, encrypted_refresh_token = ?, expires_at = ?, updated_at = ?
       WHERE id = ?
     `).run(displayName, externalAccountId, encryptedAccessToken, encryptedRefreshToken, expiresAt, now, existing.id);
-    return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(existing.id);
+    const row = db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(existing.id);
+    queuePostgresUpsert("connected_accounts.update", "connected_accounts", row, ["id"]);
+    return row;
   }
 
   const id = randomUUID();
@@ -903,7 +1122,9 @@ export function upsertConnectedAccount({
     now,
     now,
   );
-  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(id);
+  const row = db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(id);
+  queuePostgresUpsert("connected_accounts.create", "connected_accounts", row, ["id"]);
+  return row;
 }
 
 export function updateConnectedAccountTokens(accountId, { encryptedAccessToken, encryptedRefreshToken, expiresAt }) {
@@ -913,7 +1134,34 @@ export function updateConnectedAccountTokens(accountId, { encryptedAccessToken, 
     WHERE id = ?
   `).run(encryptedAccessToken, encryptedRefreshToken, expiresAt || "", nowIso(), accountId);
 
-  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(accountId);
+  const row = db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(accountId);
+  queuePostgresUpsert("connected_accounts.tokens", "connected_accounts", row, ["id"]);
+  return row;
+}
+
+export async function updateConnectedAccountTokensRuntime(accountId, patch) {
+  if (!postgresPrimaryEnabled()) {
+    return updateConnectedAccountTokens(accountId, patch);
+  }
+
+  try {
+    const existing = await queryPostgresRow("SELECT * FROM connected_accounts WHERE id = $1", [accountId]);
+    if (!existing) {
+      return updateConnectedAccountTokens(accountId, patch);
+    }
+
+    const row = {
+      ...existing,
+      encrypted_access_token: patch.encryptedAccessToken ?? existing.encrypted_access_token ?? "",
+      encrypted_refresh_token: patch.encryptedRefreshToken ?? existing.encrypted_refresh_token ?? "",
+      expires_at: patch.expiresAt ?? existing.expires_at ?? "",
+      updated_at: nowIso(),
+    };
+    await upsertPostgresNow("connected_accounts", row, ["id"]);
+    return row;
+  } catch {
+    return updateConnectedAccountTokens(accountId, patch);
+  }
 }
 
 function createSyncRun({
@@ -940,6 +1188,49 @@ function createSyncRun({
   );
 }
 
+async function createSyncRunRuntime({
+  userId,
+  connectedAccountId,
+  status,
+  processedThreads = 0,
+  processedMessages = 0,
+  errorMessage = "",
+}) {
+  if (!postgresPrimaryEnabled()) {
+    createSyncRun({
+      userId,
+      connectedAccountId,
+      status,
+      processedThreads,
+      processedMessages,
+      errorMessage,
+    });
+    return;
+  }
+
+  try {
+    await upsertPostgresNow("sync_runs", {
+      id: randomUUID(),
+      user_id: userId,
+      connected_account_id: connectedAccountId,
+      status,
+      processed_threads: processedThreads,
+      processed_messages: processedMessages,
+      error_message: errorMessage,
+      created_at: nowIso(),
+    }, ["id"]);
+  } catch {
+    createSyncRun({
+      userId,
+      connectedAccountId,
+      status,
+      processedThreads,
+      processedMessages,
+      errorMessage,
+    });
+  }
+}
+
 export function findConnectedAccountById(accountId) {
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(accountId);
 }
@@ -964,8 +1255,43 @@ export function findConnectedAccountByWebhookSubscriptionId(provider, externalSu
   `).get(provider, externalSubscriptionId);
 }
 
+export async function findConnectedAccountByWebhookSubscriptionIdRuntime(provider, externalSubscriptionId) {
+  if (!postgresPrimaryEnabled()) {
+    return findConnectedAccountByWebhookSubscriptionId(provider, externalSubscriptionId);
+  }
+
+  try {
+    const row = await queryPostgresRow(`
+      SELECT ca.*
+      FROM webhook_subscriptions ws
+      JOIN connected_accounts ca ON ca.id = ws.connected_account_id
+      WHERE ws.provider = $1 AND ws.external_subscription_id = $2
+      LIMIT 1
+    `, [provider, externalSubscriptionId]);
+    return row || findConnectedAccountByWebhookSubscriptionId(provider, externalSubscriptionId);
+  } catch {
+    return findConnectedAccountByWebhookSubscriptionId(provider, externalSubscriptionId);
+  }
+}
+
 export function getMailSyncState(accountId) {
   return db.prepare("SELECT * FROM mail_sync_state WHERE connected_account_id = ?").get(accountId);
+}
+
+export async function getMailSyncStateRuntime(accountId) {
+  if (!postgresPrimaryEnabled()) {
+    return getMailSyncState(accountId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM mail_sync_state WHERE connected_account_id = $1",
+      [accountId],
+    );
+    return row || getMailSyncState(accountId);
+  } catch {
+    return getMailSyncState(accountId);
+  }
 }
 
 export function upsertMailSyncState(accountId, patch) {
@@ -1012,11 +1338,62 @@ export function upsertMailSyncState(accountId, patch) {
     next.updated_at,
   );
 
-  return getMailSyncState(accountId);
+  const row = getMailSyncState(accountId);
+  queuePostgresUpsert("mail_sync_state.upsert", "mail_sync_state", row, ["connected_account_id"]);
+  return row;
+}
+
+export async function upsertMailSyncStateRuntime(accountId, patch) {
+  if (!postgresPrimaryEnabled()) {
+    return upsertMailSyncState(accountId, patch);
+  }
+
+  try {
+    const account = await findConnectedAccountByIdRuntime(accountId);
+    if (!account) {
+      return upsertMailSyncState(accountId, patch);
+    }
+
+    const existing = await queryPostgresRow(
+      "SELECT * FROM mail_sync_state WHERE connected_account_id = $1",
+      [accountId],
+    );
+    const row = {
+      connected_account_id: accountId,
+      user_id: account.user_id,
+      provider: account.provider,
+      sync_cursor: patch.syncCursor ?? existing?.sync_cursor ?? "",
+      delta_link: patch.deltaLink ?? existing?.delta_link ?? "",
+      last_full_sync_at: patch.lastFullSyncAt ?? existing?.last_full_sync_at ?? "",
+      last_delta_sync_at: patch.lastDeltaSyncAt ?? existing?.last_delta_sync_at ?? "",
+      last_webhook_at: patch.lastWebhookAt ?? existing?.last_webhook_at ?? "",
+      updated_at: nowIso(),
+    };
+    await upsertPostgresNow("mail_sync_state", row, ["connected_account_id"]);
+    return row;
+  } catch {
+    return upsertMailSyncState(accountId, patch);
+  }
 }
 
 export function getWebhookSubscription(accountId) {
   return db.prepare("SELECT * FROM webhook_subscriptions WHERE connected_account_id = ?").get(accountId);
+}
+
+export async function getWebhookSubscriptionRuntime(accountId) {
+  if (!postgresPrimaryEnabled()) {
+    return getWebhookSubscription(accountId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM webhook_subscriptions WHERE connected_account_id = $1",
+      [accountId],
+    );
+    return row || getWebhookSubscription(accountId);
+  } catch {
+    return getWebhookSubscription(accountId);
+  }
 }
 
 export function upsertWebhookSubscription(accountId, patch) {
@@ -1068,7 +1445,45 @@ export function upsertWebhookSubscription(accountId, patch) {
     next.updated_at,
   );
 
-  return getWebhookSubscription(accountId);
+  const row = getWebhookSubscription(accountId);
+  queuePostgresUpsert("webhook_subscriptions.upsert", "webhook_subscriptions", row, ["connected_account_id"]);
+  return row;
+}
+
+export async function upsertWebhookSubscriptionRuntime(accountId, patch) {
+  if (!postgresPrimaryEnabled()) {
+    return upsertWebhookSubscription(accountId, patch);
+  }
+
+  try {
+    const account = await findConnectedAccountByIdRuntime(accountId);
+    if (!account) {
+      return upsertWebhookSubscription(accountId, patch);
+    }
+
+    const existing = await queryPostgresRow(
+      "SELECT * FROM webhook_subscriptions WHERE connected_account_id = $1",
+      [accountId],
+    );
+    const now = nowIso();
+    const row = {
+      id: existing?.id || randomUUID(),
+      connected_account_id: accountId,
+      provider: account.provider,
+      external_subscription_id: patch.externalId ?? existing?.external_subscription_id ?? "",
+      resource: patch.resource ?? existing?.resource ?? "",
+      client_state: patch.clientState ?? existing?.client_state ?? "",
+      notification_url: patch.notificationUrl ?? existing?.notification_url ?? "",
+      expiration_at: patch.expirationAt ?? existing?.expiration_at ?? "",
+      status: patch.status ?? existing?.status ?? "pending",
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+    await upsertPostgresNow("webhook_subscriptions", row, ["connected_account_id"]);
+    return row;
+  } catch {
+    return upsertWebhookSubscription(accountId, patch);
+  }
 }
 
 export function deleteConnectedAccount(userId, accountId) {
@@ -1076,6 +1491,9 @@ export function deleteConnectedAccount(userId, accountId) {
   if (!existing) {
     return false;
   }
+
+  const threadIds = db.prepare("SELECT id FROM mail_threads WHERE user_id = ? AND connected_account_id = ?").all(userId, accountId)
+    .map((row) => row.id);
 
   db.exec("BEGIN");
   try {
@@ -1092,6 +1510,18 @@ export function deleteConnectedAccount(userId, accountId) {
     db.prepare("DELETE FROM webhook_subscriptions WHERE connected_account_id = ?").run(accountId);
     db.prepare("DELETE FROM connected_accounts WHERE id = ? AND user_id = ?").run(accountId, userId);
     db.exec("COMMIT");
+    queuePostgresMirror("connected_accounts.delete", async (postgres) => {
+      await deletePostgresRecords(postgres, "draft_records", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "meeting_sessions", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "calendar_events", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecordsByColumnValues(postgres, "thread_classifications", "thread_id", threadIds);
+      await deletePostgresRecordsByColumnValues(postgres, "mail_messages", "thread_id", threadIds);
+      await deletePostgresRecords(postgres, "mail_threads", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "sync_runs", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "mail_sync_state", { connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "webhook_subscriptions", { connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "connected_accounts", { id: accountId, user_id: userId });
+    });
     return true;
   } catch (error) {
     db.exec("ROLLBACK");
@@ -1100,10 +1530,20 @@ export function deleteConnectedAccount(userId, accountId) {
 }
 
 export function createOauthState({ workspaceId, userId, provider, redirectUri, state, expiresAt }) {
+  const createdAt = nowIso();
   db.prepare(`
     INSERT INTO oauth_states (state, workspace_id, user_id, provider, redirect_uri, expires_at, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(state, workspaceId, userId, provider, redirectUri, expiresAt, nowIso());
+  `).run(state, workspaceId, userId, provider, redirectUri, expiresAt, createdAt);
+  queuePostgresUpsert("oauth_states.create", "oauth_states", {
+    state,
+    workspace_id: workspaceId,
+    user_id: userId,
+    provider,
+    redirect_uri: redirectUri,
+    expires_at: expiresAt,
+    created_at: createdAt,
+  }, ["state"]);
 }
 
 export function consumeOauthState(state, provider) {
@@ -1112,6 +1552,7 @@ export function consumeOauthState(state, provider) {
     return null;
   }
   db.prepare("DELETE FROM oauth_states WHERE state = ?").run(state);
+  queuePostgresDelete("oauth_states.consume", "oauth_states", { state });
   if (new Date(row.expires_at) <= new Date()) {
     return null;
   }
@@ -1144,6 +1585,8 @@ export function updateWorkspaceSummary(userId, patch) {
 
   db.prepare("UPDATE workspaces SET name = ?, email_domain = ?, updated_at = ? WHERE id = ?")
     .run(next.orgName, next.orgDomain, nowIso(), workspace.id);
+  const updatedWorkspace = db.prepare("SELECT * FROM workspaces WHERE id = ?").get(workspace.id);
+  queuePostgresUpsert("workspaces.update", "workspaces", updatedWorkspace, ["id"]);
   setSetting("organization", next);
   return getWorkspaceSummary(userId);
 }
@@ -1166,7 +1609,9 @@ export function createTeam(workspaceId, name) {
   const id = randomUUID();
   db.prepare("INSERT INTO teams (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)")
     .run(id, workspaceId, name, nowIso());
-  return db.prepare("SELECT * FROM teams WHERE id = ?").get(id);
+  const row = db.prepare("SELECT * FROM teams WHERE id = ?").get(id);
+  queuePostgresUpsert("teams.create", "teams", row, ["id"]);
+  return row;
 }
 
 export function listInvites(workspaceId) {
@@ -1177,11 +1622,730 @@ export function createInvite(workspaceId, email, role = "member") {
   const id = randomUUID();
   db.prepare("INSERT INTO invites (id, workspace_id, email, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run(id, workspaceId, email, role, "pending", nowIso());
-  return db.prepare("SELECT * FROM invites WHERE id = ?").get(id);
+  const row = db.prepare("SELECT * FROM invites WHERE id = ?").get(id);
+  queuePostgresUpsert("invites.create", "invites", row, ["id"]);
+  return row;
+}
+
+export async function getOrCreateDevUserRuntime() {
+  const local = getOrCreateDevUser();
+  if (!postgresPrimaryEnabled()) {
+    return local;
+  }
+
+  try {
+    let user = await queryPostgresRow("SELECT * FROM users WHERE email = $1", [local.user.email]);
+    let workspace = user
+      ? await queryPostgresRow("SELECT * FROM workspaces WHERE owner_user_id = $1", [user.id])
+      : null;
+
+    if (!user || !workspace) {
+      const workspaceMember = db.prepare("SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?")
+        .get(local.workspace.id, local.user.id);
+      const organizationSetting = db.prepare("SELECT * FROM settings WHERE key = ?").get("organization");
+
+      await withPostgresTransaction(async (postgres) => {
+        await upsertPostgresRecord(postgres, "users", local.user, ["id"]);
+        await upsertPostgresRecord(postgres, "workspaces", local.workspace, ["id"]);
+        if (workspaceMember) {
+          await upsertPostgresRecord(postgres, "workspace_members", workspaceMember, ["id"]);
+        }
+        if (organizationSetting) {
+          await upsertPostgresRecord(postgres, "settings", organizationSetting, ["key"]);
+        }
+      });
+
+      user = local.user;
+      workspace = local.workspace;
+    }
+
+    return {
+      user: user || local.user,
+      workspace: workspace || local.workspace,
+    };
+  } catch {
+    return local;
+  }
+}
+
+export async function getSettingRuntime(key, fallback = null) {
+  if (!postgresPrimaryEnabled()) {
+    return getSetting(key, fallback);
+  }
+
+  try {
+    const row = await queryPostgresRow("SELECT json_value FROM settings WHERE key = $1", [key]);
+    if (!row) {
+      return fallback;
+    }
+    return safeJsonParse(row.json_value, fallback);
+  } catch {
+    return getSetting(key, fallback);
+  }
+}
+
+export async function setSettingRuntime(key, value) {
+  const next = setSetting(key, value);
+  if (!postgresPrimaryEnabled()) {
+    return next;
+  }
+
+  const row = db.prepare("SELECT * FROM settings WHERE key = ?").get(key);
+  try {
+    await upsertPostgresNow("settings", row, ["key"]);
+  } catch {
+    return next;
+  }
+
+  return next;
+}
+
+export async function createSessionRuntime(userId) {
+  const session = createSession(userId);
+  if (!postgresPrimaryEnabled()) {
+    return session;
+  }
+
+  const row = db.prepare("SELECT * FROM sessions WHERE id = ?").get(session.id);
+  try {
+    await upsertPostgresNow("sessions", row, ["id"]);
+  } catch {
+    return session;
+  }
+
+  return session;
+}
+
+export async function getSessionRuntime(sessionId) {
+  if (!postgresPrimaryEnabled()) {
+    return getSession(sessionId);
+  }
+
+  if (!sessionId) {
+    return null;
+  }
+
+  try {
+    const session = await queryPostgresRow("SELECT * FROM sessions WHERE id = $1", [sessionId]);
+    if (!session) {
+      return getSession(sessionId);
+    }
+
+    if (new Date(session.expires_at) <= new Date()) {
+      db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+      await queryPostgres("DELETE FROM sessions WHERE id = $1", [sessionId]);
+      return null;
+    }
+
+    const user = await queryPostgresRow("SELECT * FROM users WHERE id = $1", [session.user_id]);
+    const workspace = user
+      ? await queryPostgresRow("SELECT * FROM workspaces WHERE owner_user_id = $1", [user.id])
+      : null;
+
+    if (!user || !workspace) {
+      return getSession(sessionId);
+    }
+
+    return { session, user, workspace };
+  } catch {
+    return getSession(sessionId);
+  }
+}
+
+export async function deleteSessionRuntime(sessionId) {
+  deleteSession(sessionId);
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  try {
+    await queryPostgres("DELETE FROM sessions WHERE id = $1", [sessionId]);
+  } catch {
+    // Local deletion has already happened; keep runtime resilient.
+  }
+}
+
+export async function createOauthStateRuntime(payload) {
+  createOauthState(payload);
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const row = db.prepare("SELECT * FROM oauth_states WHERE state = ?").get(payload.state);
+  try {
+    await upsertPostgresNow("oauth_states", row, ["state"]);
+  } catch {
+    // OAuth can still proceed through the SQLite fallback path.
+  }
+}
+
+export async function consumeOauthStateRuntime(state, provider) {
+  if (!postgresPrimaryEnabled()) {
+    return consumeOauthState(state, provider);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM oauth_states WHERE state = $1 AND provider = $2",
+      [state, provider],
+    );
+    if (!row) {
+      return consumeOauthState(state, provider);
+    }
+
+    await queryPostgres("DELETE FROM oauth_states WHERE state = $1", [state]);
+    db.prepare("DELETE FROM oauth_states WHERE state = ?").run(state);
+
+    if (new Date(row.expires_at) <= new Date()) {
+      return null;
+    }
+
+    return row;
+  } catch {
+    return consumeOauthState(state, provider);
+  }
+}
+
+export async function getWorkspaceSummaryRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return getWorkspaceSummary(userId);
+  }
+
+  try {
+    const workspace = await queryPostgresRow("SELECT * FROM workspaces WHERE owner_user_id = $1", [userId]);
+    if (!workspace) {
+      return getWorkspaceSummary(userId);
+    }
+
+    const organization = await getSettingRuntime("organization", defaultOrganization);
+    return {
+      id: workspace.id,
+      type: workspace.type,
+      ownerUserId: workspace.owner_user_id,
+      orgName: organization.orgName,
+      orgDomain: organization.orgDomain,
+      settings: organization.settings,
+    };
+  } catch {
+    return getWorkspaceSummary(userId);
+  }
+}
+
+export async function updateWorkspaceSummaryRuntime(userId, patch) {
+  const updated = updateWorkspaceSummary(userId, patch);
+  if (!postgresPrimaryEnabled()) {
+    return updated;
+  }
+
+  const workspace = db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").get(userId);
+  const settingRow = db.prepare("SELECT * FROM settings WHERE key = ?").get("organization");
+
+  try {
+    await withPostgresTransaction(async (postgres) => {
+      await upsertPostgresRecord(postgres, "workspaces", workspace, ["id"]);
+      await upsertPostgresRecord(postgres, "settings", settingRow, ["key"]);
+    });
+  } catch {
+    return updated;
+  }
+
+  return getWorkspaceSummaryRuntime(userId);
+}
+
+export async function listWorkspaceMembersRuntime(workspaceId) {
+  if (!postgresPrimaryEnabled()) {
+    return listWorkspaceMembers(workspaceId);
+  }
+
+  try {
+    const rows = await queryPostgresRows(`
+      SELECT wm.role, u.id, u.email, u.full_name, u.created_at
+      FROM workspace_members wm
+      JOIN users u ON u.id = wm.user_id
+      WHERE wm.workspace_id = $1
+      ORDER BY u.created_at ASC
+    `, [workspaceId]);
+    return rows;
+  } catch {
+    return listWorkspaceMembers(workspaceId);
+  }
+}
+
+export async function listTeamsRuntime(workspaceId) {
+  if (!postgresPrimaryEnabled()) {
+    return listTeams(workspaceId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM teams WHERE workspace_id = $1 ORDER BY created_at ASC",
+      [workspaceId],
+    );
+  } catch {
+    return listTeams(workspaceId);
+  }
+}
+
+export async function createTeamRuntime(workspaceId, name) {
+  const row = createTeam(workspaceId, name);
+  if (!postgresPrimaryEnabled()) {
+    return row;
+  }
+
+  try {
+    await upsertPostgresNow("teams", row, ["id"]);
+  } catch {
+    return row;
+  }
+
+  return row;
+}
+
+export async function listInvitesRuntime(workspaceId) {
+  if (!postgresPrimaryEnabled()) {
+    return listInvites(workspaceId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM invites WHERE workspace_id = $1 ORDER BY created_at DESC",
+      [workspaceId],
+    );
+  } catch {
+    return listInvites(workspaceId);
+  }
+}
+
+export async function createInviteRuntime(workspaceId, email, role = "member") {
+  const row = createInvite(workspaceId, email, role);
+  if (!postgresPrimaryEnabled()) {
+    return row;
+  }
+
+  try {
+    await upsertPostgresNow("invites", row, ["id"]);
+  } catch {
+    return row;
+  }
+
+  return row;
+}
+
+export async function listConnectedAccountsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listConnectedAccounts(userId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM connected_accounts WHERE user_id = $1 ORDER BY created_at DESC",
+      [userId],
+    );
+  } catch {
+    return listConnectedAccounts(userId);
+  }
+}
+
+async function listAllConnectedAccountsRuntime() {
+  if (!postgresPrimaryEnabled()) {
+    return db.prepare(`
+      SELECT *
+      FROM connected_accounts
+      WHERE provider IN ('google', 'microsoft')
+      ORDER BY created_at DESC
+    `).all();
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT *
+      FROM connected_accounts
+      WHERE provider IN ('google', 'microsoft')
+      ORDER BY created_at DESC
+    `);
+  } catch {
+    return db.prepare(`
+      SELECT *
+      FROM connected_accounts
+      WHERE provider IN ('google', 'microsoft')
+      ORDER BY created_at DESC
+    `).all();
+  }
+}
+
+export async function findConnectedAccountByIdRuntime(accountId) {
+  if (!postgresPrimaryEnabled()) {
+    return findConnectedAccountById(accountId);
+  }
+
+  try {
+    const row = await queryPostgresRow("SELECT * FROM connected_accounts WHERE id = $1", [accountId]);
+    return row || findConnectedAccountById(accountId);
+  } catch {
+    return findConnectedAccountById(accountId);
+  }
+}
+
+export async function findConnectedAccountByProviderEmailRuntime(provider, email) {
+  if (!postgresPrimaryEnabled()) {
+    return findConnectedAccountByProviderEmail(provider, email);
+  }
+
+  try {
+    const row = await queryPostgresRow(`
+      SELECT *
+      FROM connected_accounts
+      WHERE provider = $1 AND lower(email) = lower($2)
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [provider, email]);
+    return row || findConnectedAccountByProviderEmail(provider, email);
+  } catch {
+    return findConnectedAccountByProviderEmail(provider, email);
+  }
+}
+
+export async function upsertConnectedAccountRuntime(payload) {
+  const row = upsertConnectedAccount(payload);
+  if (!postgresPrimaryEnabled()) {
+    return row;
+  }
+
+  try {
+    await upsertPostgresNow("connected_accounts", row, ["id"]);
+  } catch {
+    return row;
+  }
+
+  return row;
+}
+
+export async function deleteConnectedAccountRuntime(userId, accountId) {
+  const threadIds = db.prepare("SELECT id FROM mail_threads WHERE user_id = ? AND connected_account_id = ?").all(userId, accountId)
+    .map((row) => row.id);
+  const deleted = deleteConnectedAccount(userId, accountId);
+  if (!deleted || !postgresPrimaryEnabled()) {
+    return deleted;
+  }
+
+  try {
+    await withPostgresTransaction(async (postgres) => {
+      await deletePostgresRecords(postgres, "draft_records", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "meeting_sessions", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "calendar_events", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecordsByColumnValues(postgres, "thread_classifications", "thread_id", threadIds);
+      await deletePostgresRecordsByColumnValues(postgres, "mail_messages", "thread_id", threadIds);
+      await deletePostgresRecords(postgres, "mail_threads", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "sync_runs", { user_id: userId, connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "mail_sync_state", { connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "webhook_subscriptions", { connected_account_id: accountId });
+      await deletePostgresRecords(postgres, "connected_accounts", { id: accountId, user_id: userId });
+    });
+  } catch {
+    return deleted;
+  }
+
+  return deleted;
+}
+
+async function syncCalendarRowsToPostgres(userId, accountId = null) {
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const filters = ["user_id = ?"];
+  const params = [userId];
+  const deleteFilters = { user_id: userId };
+  if (accountId) {
+    filters.push("connected_account_id = ?");
+    params.push(accountId);
+    deleteFilters.connected_account_id = accountId;
+  }
+
+  const rows = db.prepare(`
+    SELECT *
+    FROM calendar_events
+    WHERE ${filters.join(" AND ")}
+  `).all(...params);
+
+  await withPostgresTransaction(async (postgres) => {
+    await deletePostgresRecords(postgres, "calendar_events", deleteFilters);
+    for (const row of rows) {
+      await upsertPostgresRecord(postgres, "calendar_events", row, ["id"]);
+    }
+  });
+}
+
+async function syncMeetingSessionsToPostgres(userId, sessionId = "") {
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const filters = ["user_id = ?"];
+  const params = [userId];
+  if (sessionId) {
+    filters.push("id = ?");
+    params.push(sessionId);
+  }
+
+  const rows = db.prepare(`
+    SELECT *
+    FROM meeting_sessions
+    WHERE ${filters.join(" AND ")}
+  `).all(...params);
+
+  await withPostgresTransaction(async (postgres) => {
+    if (sessionId) {
+      await deletePostgresRecords(postgres, "meeting_sessions", { id: sessionId, user_id: userId });
+    } else {
+      await deletePostgresRecords(postgres, "meeting_sessions", { user_id: userId });
+    }
+
+    for (const row of rows) {
+      await upsertPostgresRecord(postgres, "meeting_sessions", row, ["id"]);
+    }
+  });
+}
+
+async function syncMailDomainToPostgres(userId, { accountId = null, threadId = null } = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const threadFilters = ["user_id = ?"];
+  const threadParams = [userId];
+  if (accountId) {
+    threadFilters.push("connected_account_id = ?");
+    threadParams.push(accountId);
+  }
+  if (threadId) {
+    threadFilters.push("id = ?");
+    threadParams.push(threadId);
+  }
+
+  const threadRows = db.prepare(`
+    SELECT *
+    FROM mail_threads
+    WHERE ${threadFilters.join(" AND ")}
+  `).all(...threadParams);
+  const threadIds = threadRows.map((row) => row.id);
+  const messageRows = listSqliteRowsByValues("mail_messages", "thread_id", threadIds);
+  const classificationRows = listSqliteRowsByValues("thread_classifications", "thread_id", threadIds);
+
+  const draftFilters = ["user_id = ?"];
+  const draftParams = [userId];
+  if (accountId) {
+    draftFilters.push("connected_account_id = ?");
+    draftParams.push(accountId);
+  }
+  const draftRows = db.prepare(`
+    SELECT *
+    FROM draft_records
+    WHERE ${draftFilters.join(" AND ")}
+  `).all(...draftParams);
+
+  const syncRunFilters = ["user_id = ?"];
+  const syncRunParams = [userId];
+  if (accountId) {
+    syncRunFilters.push("connected_account_id = ?");
+    syncRunParams.push(accountId);
+  }
+  const syncRunRows = db.prepare(`
+    SELECT *
+    FROM sync_runs
+    WHERE ${syncRunFilters.join(" AND ")}
+  `).all(...syncRunParams);
+
+  const syncStateFilters = ["user_id = ?"];
+  const syncStateParams = [userId];
+  if (accountId) {
+    syncStateFilters.push("connected_account_id = ?");
+    syncStateParams.push(accountId);
+  }
+  const syncStateRows = db.prepare(`
+    SELECT *
+    FROM mail_sync_state
+    WHERE ${syncStateFilters.join(" AND ")}
+  `).all(...syncStateParams);
+
+  const classificationRunRows = db.prepare(`
+    SELECT *
+    FROM classification_runs
+    WHERE user_id = ?
+  `).all(userId);
+
+  const webhookRows = accountId
+    ? db.prepare("SELECT * FROM webhook_subscriptions WHERE connected_account_id = ?").all(accountId)
+    : db.prepare(`
+      SELECT ws.*
+      FROM webhook_subscriptions ws
+      JOIN connected_accounts ca ON ca.id = ws.connected_account_id
+      WHERE ca.user_id = ?
+    `).all(userId);
+
+  const accountIds = [...new Set([
+    ...threadRows.map((row) => row.connected_account_id),
+    ...draftRows.map((row) => row.connected_account_id),
+    ...syncRunRows.map((row) => row.connected_account_id),
+    ...syncStateRows.map((row) => row.connected_account_id),
+    ...webhookRows.map((row) => row.connected_account_id),
+  ].filter(Boolean))];
+
+  await withPostgresTransaction(async (postgres) => {
+    await deletePostgresRecords(
+      postgres,
+      "mail_threads",
+      accountId ? { user_id: userId, connected_account_id: accountId } : { user_id: userId },
+    );
+    await deletePostgresRecords(
+      postgres,
+      "draft_records",
+      accountId ? { user_id: userId, connected_account_id: accountId } : { user_id: userId },
+    );
+    await deletePostgresRecords(
+      postgres,
+      "sync_runs",
+      accountId ? { user_id: userId, connected_account_id: accountId } : { user_id: userId },
+    );
+    await deletePostgresRecords(
+      postgres,
+      "mail_sync_state",
+      accountId ? { connected_account_id: accountId } : { user_id: userId },
+    );
+    await deletePostgresRecords(postgres, "classification_runs", { user_id: userId });
+
+    await deletePostgresRecordsByColumnValues(postgres, "mail_messages", "thread_id", threadIds);
+    await deletePostgresRecordsByColumnValues(postgres, "thread_classifications", "thread_id", threadIds);
+    await deletePostgresRecordsByColumnValues(postgres, "webhook_subscriptions", "connected_account_id", accountIds);
+
+    for (const row of threadRows) {
+      await upsertPostgresRecord(postgres, "mail_threads", row, ["id"]);
+    }
+    for (const row of messageRows) {
+      await upsertPostgresRecord(postgres, "mail_messages", row, ["id"]);
+    }
+    for (const row of classificationRows) {
+      await upsertPostgresRecord(postgres, "thread_classifications", row, ["thread_id"]);
+    }
+    for (const row of draftRows) {
+      await upsertPostgresRecord(postgres, "draft_records", row, ["id"]);
+    }
+    for (const row of syncRunRows) {
+      await upsertPostgresRecord(postgres, "sync_runs", row, ["id"]);
+    }
+    for (const row of syncStateRows) {
+      await upsertPostgresRecord(postgres, "mail_sync_state", row, ["connected_account_id"]);
+    }
+    for (const row of webhookRows) {
+      await upsertPostgresRecord(postgres, "webhook_subscriptions", row, ["connected_account_id"]);
+    }
+    for (const row of classificationRunRows) {
+      await upsertPostgresRecord(postgres, "classification_runs", row, ["id"]);
+    }
+  });
+}
+
+async function listCalendarRowsRuntime(userId, {
+  from = "",
+  to = "",
+  accountId = null,
+  includeCancelled = false,
+  limit = 100,
+} = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return listCalendarRows(userId, {
+      from,
+      to,
+      accountId,
+      includeCancelled,
+      limit,
+    });
+  }
+
+  const filters = ["ce.user_id = $1"];
+  const params = [userId];
+
+  if (accountId) {
+    params.push(accountId);
+    filters.push(`ce.connected_account_id = $${params.length}`);
+  }
+
+  if (!includeCancelled) {
+    filters.push("ce.status != 'cancelled'");
+  }
+
+  if (from) {
+    params.push(from);
+    filters.push(`ce.end_at >= $${params.length}`);
+  }
+
+  if (to) {
+    params.push(to);
+    filters.push(`ce.start_at <= $${params.length}`);
+  }
+
+  params.push(Number(limit));
+
+  try {
+    return await queryPostgresRows(`
+      SELECT ce.*, ca.email AS account_email, ca.display_name AS account_display_name
+      FROM calendar_events ce
+      LEFT JOIN connected_accounts ca ON ca.id = ce.connected_account_id
+      WHERE ${filters.join(" AND ")}
+      ORDER BY ce.start_at ASC, ce.id ASC
+      LIMIT $${params.length}
+    `, params);
+  } catch {
+    return listCalendarRows(userId, {
+      from,
+      to,
+      accountId,
+      includeCancelled,
+      limit,
+    });
+  }
+}
+
+async function calendarEventsSummaryRuntime(userId, rows) {
+  if (!postgresPrimaryEnabled()) {
+    return calendarEventsSummary(userId, rows);
+  }
+
+  const upcoming = rows.filter((event) => new Date(event.end_at).getTime() >= Date.now());
+  const recentEvents = (await listCalendarRowsRuntime(userId, {
+    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    to: nowIso(),
+    includeCancelled: false,
+    limit: 500,
+  })).filter((event) => new Date(event.end_at).getTime() <= Date.now());
+
+  const totalMinutes = recentEvents.reduce((sum, event) => sum + meetingDurationMinutes(event), 0);
+  const averageAttendees = recentEvents.length
+    ? (recentEvents.reduce((sum, event) => sum + Number(event.attendee_count || 0), 0) / recentEvents.length)
+    : 0;
+  const averageDurationMinutes = recentEvents.length
+    ? Math.round(totalMinutes / recentEvents.length)
+    : 0;
+  const todayKey = calendarDayKey(new Date().toISOString());
+  const tomorrowKey = calendarDayKey(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
+
+  return {
+    upcomingCount: upcoming.length,
+    todayCount: rows.filter((event) => calendarDayKey(event.start_at) === todayKey).length,
+    tomorrowCount: rows.filter((event) => calendarDayKey(event.start_at) === tomorrowKey).length,
+    bookedMeetings30d: recentEvents.length,
+    averageAttendees,
+    averageDurationMinutes,
+    totalMeetingMinutes30d: totalMinutes,
+  };
 }
 
 export function getBillingSummary() {
   return getSetting("billing", defaultBilling);
+}
+
+export async function getBillingSummaryRuntime() {
+  return getSettingRuntime("billing", defaultBilling);
 }
 
 export function getDashboard(userId) {
@@ -1206,8 +2370,88 @@ export function getDashboard(userId) {
   };
 }
 
+export async function getDashboardRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return getDashboard(userId);
+  }
+
+  try {
+    const [processedPayload, draftPayload] = await Promise.all([
+      queryPostgres("SELECT COUNT(*)::int AS count FROM mail_threads WHERE user_id = $1", [userId]),
+      queryPostgres("SELECT COUNT(*)::int AS count FROM draft_records WHERE user_id = $1", [userId]),
+    ]);
+    const recentCalendarRows = (await listCalendarRowsRuntime(userId, {
+      from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      to: nowIso(),
+      includeCancelled: false,
+      limit: 500,
+    })).filter((event) => new Date(event.end_at).getTime() <= Date.now());
+    const meetingMinutes = recentCalendarRows.reduce((sum, event) => sum + meetingDurationMinutes(event), 0);
+
+    return {
+      stats: [
+        { label: "Email elaborate", value: String(processedPayload.rows[0]?.count || 0) },
+        { label: "Bozze create", value: String(draftPayload.rows[0]?.count || 0) },
+        { label: "Tempo riunioni", value: meetingDurationLabel(meetingMinutes) },
+      ],
+      meetings: await dashboardMeetingsRuntime(userId),
+      notifications: await listNotificationsRuntime(userId),
+    };
+  } catch {
+    return getDashboard(userId);
+  }
+}
+
 export function listConversations(userId) {
   return db.prepare("SELECT * FROM chat_conversations WHERE user_id = ? ORDER BY updated_at DESC").all(userId);
+}
+
+async function syncChatDomainToPostgres(userId, conversationId = "") {
+  if (!postgresPrimaryEnabled()) {
+    return;
+  }
+
+  const conversationFilters = ["user_id = ?"];
+  const conversationParams = [userId];
+  if (conversationId) {
+    conversationFilters.push("id = ?");
+    conversationParams.push(conversationId);
+  }
+
+  const conversations = db.prepare(`
+    SELECT *
+    FROM chat_conversations
+    WHERE ${conversationFilters.join(" AND ")}
+  `).all(...conversationParams);
+  const conversationIds = conversations.map((row) => row.id);
+  const messages = listSqliteRowsByValues("chat_messages", "conversation_id", conversationIds);
+
+  await withPostgresTransaction(async (postgres) => {
+    await deletePostgresRecords(postgres, "chat_conversations", conversationId ? { id: conversationId, user_id: userId } : { user_id: userId });
+    await deletePostgresRecordsByColumnValues(postgres, "chat_messages", "conversation_id", conversationIds);
+
+    for (const row of conversations) {
+      await upsertPostgresRecord(postgres, "chat_conversations", row, ["id"]);
+    }
+    for (const row of messages) {
+      await upsertPostgresRecord(postgres, "chat_messages", row, ["id"]);
+    }
+  });
+}
+
+export async function listConversationsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listConversations(userId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM chat_conversations WHERE user_id = $1 ORDER BY updated_at DESC",
+      [userId],
+    );
+  } catch {
+    return listConversations(userId);
+  }
 }
 
 export function createConversation(userId, title = "Nuova chat") {
@@ -1218,8 +2462,38 @@ export function createConversation(userId, title = "Nuova chat") {
   return db.prepare("SELECT * FROM chat_conversations WHERE id = ?").get(id);
 }
 
+export async function createConversationRuntime(userId, title = "Nuova chat") {
+  const conversation = createConversation(userId, title);
+  if (!postgresPrimaryEnabled()) {
+    return conversation;
+  }
+
+  try {
+    await syncChatDomainToPostgres(userId, conversation.id);
+  } catch {
+    return conversation;
+  }
+
+  return conversation;
+}
+
 export function listConversationMessages(conversationId) {
   return db.prepare("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC").all(conversationId);
+}
+
+export async function listConversationMessagesRuntime(conversationId) {
+  if (!postgresPrimaryEnabled()) {
+    return listConversationMessages(conversationId);
+  }
+
+  try {
+    return await queryPostgresRows(
+      "SELECT * FROM chat_messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+      [conversationId],
+    );
+  } catch {
+    return listConversationMessages(conversationId);
+  }
 }
 
 export function addConversationMessage(conversationId, role, content) {
@@ -1229,6 +2503,26 @@ export function addConversationMessage(conversationId, role, content) {
     .run(id, conversationId, role, content, now);
   db.prepare("UPDATE chat_conversations SET updated_at = ? WHERE id = ?").run(now, conversationId);
   return db.prepare("SELECT * FROM chat_messages WHERE id = ?").get(id);
+}
+
+export async function addConversationMessageRuntime(conversationId, role, content) {
+  const conversation = db.prepare(`
+    SELECT cc.*
+    FROM chat_conversations cc
+    WHERE cc.id = ?
+  `).get(conversationId);
+  const message = addConversationMessage(conversationId, role, content);
+  if (!message || !postgresPrimaryEnabled() || !conversation?.user_id) {
+    return message;
+  }
+
+  try {
+    await syncChatDomainToPostgres(conversation.user_id, conversationId);
+  } catch {
+    return message;
+  }
+
+  return message;
 }
 
 function demoThreadsForAccount(account) {
@@ -1428,6 +2722,80 @@ function upsertCalendarEvent(userId, account, event) {
   return id;
 }
 
+function deleteStaleCalendarEventsSqlite(userId, accountId, window, externalEventIds = []) {
+  if (externalEventIds.length === 0) {
+    db.prepare(`
+      DELETE FROM calendar_events
+      WHERE user_id = ? AND connected_account_id = ? AND end_at >= ? AND start_at <= ?
+    `).run(userId, accountId, window.timeMin, window.timeMax);
+    return;
+  }
+
+  const placeholders = externalEventIds.map(() => "?").join(", ");
+  db.prepare(`
+    DELETE FROM calendar_events
+    WHERE user_id = ? AND connected_account_id = ? AND end_at >= ? AND start_at <= ?
+      AND external_event_id NOT IN (${placeholders})
+  `).run(userId, accountId, window.timeMin, window.timeMax, ...externalEventIds);
+}
+
+async function syncCalendarWindowPostgresPrimary(userId, account, events, window) {
+  const validEvents = events.filter((event) => event?.externalEventId && event.startAt);
+  const externalEventIds = validEvents.map((event) => event.externalEventId);
+
+  await withPostgresTransaction(async (postgres) => {
+    if (externalEventIds.length === 0) {
+      await postgres.query(`
+        DELETE FROM calendar_events
+        WHERE user_id = $1 AND connected_account_id = $2 AND end_at >= $3 AND start_at <= $4
+      `, [userId, account.id, window.timeMin, window.timeMax]);
+    } else {
+      const deletePlaceholders = externalEventIds.map((_, index) => `$${index + 5}`).join(", ");
+      await postgres.query(`
+        DELETE FROM calendar_events
+        WHERE user_id = $1 AND connected_account_id = $2 AND end_at >= $3 AND start_at <= $4
+          AND external_event_id NOT IN (${deletePlaceholders})
+      `, [userId, account.id, window.timeMin, window.timeMax, ...externalEventIds]);
+    }
+
+    const existingRows = externalEventIds.length === 0
+      ? []
+      : (await postgres.query(`
+        SELECT id, external_event_id, created_at
+        FROM calendar_events
+        WHERE user_id = $1 AND connected_account_id = $2 AND external_event_id = ANY($3::text[])
+      `, [userId, account.id, externalEventIds])).rows;
+    const existingByExternalId = new Map(existingRows.map((row) => [row.external_event_id, row]));
+
+    for (const event of validEvents) {
+      const existing = existingByExternalId.get(event.externalEventId);
+      const now = nowIso();
+      await upsertPostgresRecord(postgres, "calendar_events", {
+        id: existing?.id || randomUUID(),
+        user_id: userId,
+        connected_account_id: account.id,
+        provider: account.provider,
+        external_event_id: event.externalEventId,
+        calendar_id: event.calendarId || "primary",
+        title: event.title || "(senza titolo)",
+        organizer_name: event.organizerName || "",
+        organizer_email: event.organizerEmail || "",
+        meeting_url: event.meetingUrl || "",
+        join_provider: event.joinProvider || "",
+        location: event.location || "",
+        status: event.status || "confirmed",
+        start_at: event.startAt,
+        end_at: event.endAt || event.startAt,
+        timezone: event.timezone || "",
+        attendee_count: Number(event.attendeeCount || 0),
+        is_all_day: event.isAllDay ? 1 : 0,
+        created_at: existing?.created_at || now,
+        updated_at: now,
+      }, ["id"]);
+    }
+  });
+}
+
 function listCalendarRows(userId, {
   from = "",
   to = "",
@@ -1529,27 +2897,66 @@ function dashboardMeetings(userId) {
   };
 }
 
+async function dashboardMeetingsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return dashboardMeetings(userId);
+  }
+
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start.getTime() + 48 * 60 * 60 * 1000);
+  const rows = await listCalendarRowsRuntime(userId, {
+    from: start.toISOString(),
+    to: end.toISOString(),
+    includeCancelled: false,
+    limit: 50,
+  });
+  const todayKey = calendarDayKey(start.toISOString());
+  const tomorrowKey = calendarDayKey(new Date(start.getTime() + 24 * 60 * 60 * 1000).toISOString());
+
+  const mapped = rows.map((event) => ({
+    id: event.id,
+    title: event.title,
+    time: meetingTimeLabel(event),
+    provider: event.provider,
+    joinProvider: event.join_provider,
+    meetingUrl: event.meeting_url,
+    accountEmail: event.account_email || "",
+  }));
+
+  return {
+    today: mapped.filter((event, index) => calendarDayKey(rows[index].start_at) === todayKey),
+    tomorrow: mapped.filter((event, index) => calendarDayKey(rows[index].start_at) === tomorrowKey),
+  };
+}
+
 async function syncAccountCalendar(userId, account, options = {}) {
   const window = calendarSyncWindow(options);
   const events = isDemoConnectedAccount(account)
     ? demoCalendarEventsForAccount(account, window)
     : await fetchCalendarRemoteState(account, window, {
       onTokenRefresh: async (tokenUpdate) => {
-        updateConnectedAccountTokens(account.id, tokenUpdate);
+        await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
       },
     });
 
+  const validEvents = events.filter((event) => event?.externalEventId && event.startAt);
+
+  if (postgresPrimaryEnabled()) {
+    await syncCalendarWindowPostgresPrimary(userId, account, validEvents, window);
+    return {
+      accountId: account.id,
+      provider: account.provider,
+      source: isDemoConnectedAccount(account) ? "demo" : "provider",
+      importedEvents: validEvents.length,
+    };
+  }
+
   db.exec("BEGIN");
   try {
-    db.prepare(`
-      DELETE FROM calendar_events
-      WHERE user_id = ? AND connected_account_id = ? AND end_at >= ? AND start_at <= ?
-    `).run(userId, account.id, window.timeMin, window.timeMax);
+    deleteStaleCalendarEventsSqlite(userId, account.id, window, validEvents.map((event) => event.externalEventId));
 
-    for (const event of events) {
-      if (!event?.externalEventId || !event.startAt) {
-        continue;
-      }
+    for (const event of validEvents) {
       upsertCalendarEvent(userId, account, event);
     }
 
@@ -1563,7 +2970,7 @@ async function syncAccountCalendar(userId, account, options = {}) {
     accountId: account.id,
     provider: account.provider,
     source: isDemoConnectedAccount(account) ? "demo" : "provider",
-    importedEvents: events.length,
+    importedEvents: validEvents.length,
   };
 }
 
@@ -1582,6 +2989,24 @@ export async function syncCalendar(userId, accountId = null, options = {}) {
     importedEvents: results.reduce((sum, item) => sum + item.importedEvents, 0),
     accounts: results,
   };
+}
+
+export async function syncCalendarRuntime(userId, accountId = null, options = {}) {
+  const accounts = accountId
+    ? (await listConnectedAccountsRuntime(userId)).filter((account) => account.id === accountId)
+    : await listConnectedAccountsRuntime(userId);
+
+  const results = [];
+  for (const account of accounts) {
+    results.push(await syncAccountCalendar(userId, account, options));
+  }
+
+  const result = {
+    syncedAccounts: accounts.length,
+    importedEvents: results.reduce((sum, item) => sum + item.importedEvents, 0),
+    accounts: results,
+  };
+  return result;
 }
 
 export function listCalendarEvents(userId, options = {}) {
@@ -1604,6 +3029,34 @@ export function listCalendarEvents(userId, options = {}) {
   };
 }
 
+export async function listCalendarEventsRuntime(userId, options = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return listCalendarEvents(userId, options);
+  }
+
+  const window = calendarSyncWindow(options);
+  try {
+    const rows = await listCalendarRowsRuntime(userId, {
+      from: options.from || window.timeMin,
+      to: options.to || window.timeMax,
+      accountId: options.accountId || null,
+      includeCancelled: options.includeCancelled === true,
+      limit: options.limit || window.maxResults,
+    });
+
+    return {
+      events: rows.map((event) => ({
+        ...event,
+        time_label: meetingTimeLabel(event),
+        duration_minutes: meetingDurationMinutes(event),
+      })),
+      summary: await calendarEventsSummaryRuntime(userId, rows),
+    };
+  } catch {
+    return listCalendarEvents(userId, options);
+  }
+}
+
 function normalizeMeetingSessionRow(row) {
   return {
     ...row,
@@ -1611,6 +3064,38 @@ function normalizeMeetingSessionRow(row) {
     key_points: safeJsonParse(row.key_points_json || "[]", []),
     action_items: safeJsonParse(row.action_items_json || "[]", []),
   };
+}
+
+async function getMeetingSessionRuntime(userId, sessionId) {
+  if (!postgresPrimaryEnabled()) {
+    const row = db.prepare("SELECT * FROM meeting_sessions WHERE id = ? AND user_id = ?").get(sessionId, userId);
+    return row ? normalizeMeetingSessionRow(row) : null;
+  }
+
+  try {
+    const row = await queryPostgresRow(`
+      SELECT
+        ms.*,
+        ce.title AS calendar_event_title,
+        ce.start_at AS calendar_event_start_at,
+        ce.end_at AS calendar_event_end_at,
+        ce.organizer_email AS calendar_event_organizer_email,
+        ce.account_email AS calendar_account_email
+      FROM meeting_sessions ms
+      LEFT JOIN (
+        SELECT ce.*, ca.email AS account_email
+        FROM calendar_events ce
+        LEFT JOIN connected_accounts ca ON ca.id = ce.connected_account_id
+      ) ce ON ce.id = ms.calendar_event_id
+      WHERE ms.user_id = $1 AND ms.id = $2
+      LIMIT 1
+    `, [userId, sessionId]);
+
+    return row ? normalizeMeetingSessionRow(row) : null;
+  } catch {
+    const row = db.prepare("SELECT * FROM meeting_sessions WHERE id = ? AND user_id = ?").get(sessionId, userId);
+    return row ? normalizeMeetingSessionRow(row) : null;
+  }
 }
 
 function fallbackMeetingAnalysis({ session, calendarEvent, transcriptText }) {
@@ -1726,6 +3211,36 @@ function updateMeetingSessionArtifacts(sessionId, patch) {
   );
 }
 
+async function updateMeetingSessionArtifactsRuntime(userId, sessionId, patch) {
+  if (!postgresPrimaryEnabled()) {
+    updateMeetingSessionArtifacts(sessionId, patch);
+    return getMeetingSessionRuntime(userId, sessionId);
+  }
+
+  await queryPostgres(`
+    UPDATE meeting_sessions
+    SET status = $1, transcript_text = $2, utterances_json = $3, summary_text = $4, key_points_json = $5, action_items_json = $6,
+        follow_up_email = $7, error_message = $8, duration_minutes = $9, transcription_provider = $10, updated_at = $11
+    WHERE id = $12 AND user_id = $13
+  `, [
+    patch.status,
+    patch.transcriptText,
+    JSON.stringify(patch.utterances || []),
+    patch.summaryText,
+    JSON.stringify(patch.keyPoints || []),
+    JSON.stringify(patch.actionItems || []),
+    patch.followUpEmail || "",
+    patch.errorMessage || "",
+    Number(patch.durationMinutes || 0),
+    patch.transcriptionProvider || "",
+    nowIso(),
+    sessionId,
+    userId,
+  ]);
+
+  return getMeetingSessionRuntime(userId, sessionId);
+}
+
 export function listMeetingSessions(userId) {
   const rows = db.prepare(`
     SELECT
@@ -1746,6 +3261,36 @@ export function listMeetingSessions(userId) {
   `).all(userId);
 
   return rows.map(normalizeMeetingSessionRow);
+}
+
+export async function listMeetingSessionsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listMeetingSessions(userId);
+  }
+
+  try {
+    const rows = await queryPostgresRows(`
+      SELECT
+        ms.*,
+        ce.title AS calendar_event_title,
+        ce.start_at AS calendar_event_start_at,
+        ce.end_at AS calendar_event_end_at,
+        ce.organizer_email AS calendar_event_organizer_email,
+        ce.account_email AS calendar_account_email
+      FROM meeting_sessions ms
+      LEFT JOIN (
+        SELECT ce.*, ca.email AS account_email
+        FROM calendar_events ce
+        LEFT JOIN connected_accounts ca ON ca.id = ce.connected_account_id
+      ) ce ON ce.id = ms.calendar_event_id
+      WHERE ms.user_id = $1
+      ORDER BY ms.updated_at DESC, ms.id DESC
+    `, [userId]);
+
+    return rows.map(normalizeMeetingSessionRow);
+  } catch {
+    return listMeetingSessions(userId);
+  }
 }
 
 export async function createMeetingSession(userId, payload = {}) {
@@ -1828,6 +3373,96 @@ export async function createMeetingSession(userId, payload = {}) {
   return normalizeMeetingSessionRow(db.prepare("SELECT * FROM meeting_sessions WHERE id = ?").get(id));
 }
 
+export async function createMeetingSessionRuntime(userId, payload = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return createMeetingSession(userId, payload);
+  }
+
+  const calendarEvent = await findCalendarEventByIdRuntime(userId, payload.calendarEventId || "");
+  const title = String(payload.title || calendarEvent?.title || "Riunione senza titolo").trim();
+  const meetingUrl = String(payload.meetingUrl || calendarEvent?.meeting_url || "").trim();
+  const transcriptText = String(payload.transcriptText || "").trim();
+  const sourceType = payload.sourceType || "record";
+  const status = transcriptText ? "processing" : (sourceType === "join" ? "scheduled" : "recording_requested");
+  const id = randomUUID();
+  const now = nowIso();
+
+  await upsertPostgresNow("meeting_sessions", {
+    id,
+    user_id: userId,
+    calendar_event_id: calendarEvent?.id || "",
+    connected_account_id: calendarEvent?.connected_account_id || "",
+    source_type: sourceType,
+    status,
+    title,
+    meeting_url: meetingUrl,
+    join_provider: calendarEvent?.join_provider || inferJoinProviderFromUrl(meetingUrl),
+    language: payload.language || defaultNotetaker.language,
+    source_file_name: payload.sourceFileName || "",
+    source_file_type: payload.sourceFileType || "",
+    source_file_size: Number(payload.sourceFileSize || 0),
+    source_object_key: payload.sourceObjectKey || "",
+    source_storage_provider: payload.sourceStorageProvider || "",
+    transcription_provider: payload.transcriptionProvider || "",
+    started_at: payload.startedAt || calendarEvent?.start_at || "",
+    ended_at: payload.endedAt || calendarEvent?.end_at || "",
+    duration_minutes: 0,
+    transcript_text: transcriptText,
+    utterances_json: JSON.stringify(payload.utterances || []),
+    summary_text: "",
+    key_points_json: "[]",
+    action_items_json: "[]",
+    follow_up_email: "",
+    error_message: "",
+    created_at: now,
+    updated_at: now,
+  }, ["id"]);
+
+  if (!transcriptText) {
+    return getMeetingSessionRuntime(userId, id);
+  }
+
+  const created = await getMeetingSessionRuntime(userId, id);
+
+  try {
+    const analysis = await analyzeMeetingSession({
+      session: created,
+      calendarEvent,
+      transcriptText,
+    });
+    const durationMinutes = created?.started_at && created?.ended_at
+      ? Math.max(0, meetingDurationMinutes({ start_at: created.started_at, end_at: created.ended_at }))
+      : 0;
+
+    return await updateMeetingSessionArtifactsRuntime(userId, id, {
+      status: "ready",
+      transcriptText,
+      utterances: payload.utterances || [],
+      summaryText: analysis.summary,
+      keyPoints: analysis.keyPoints,
+      actionItems: analysis.actionItems,
+      followUpEmail: analysis.followUpEmail,
+      durationMinutes,
+      transcriptionProvider: payload.transcriptionProvider || "",
+      errorMessage: "",
+    });
+  } catch (error) {
+    await updateMeetingSessionArtifactsRuntime(userId, id, {
+      status: "failed",
+      transcriptText,
+      utterances: payload.utterances || [],
+      summaryText: "",
+      keyPoints: [],
+      actionItems: [],
+      followUpEmail: "",
+      durationMinutes: 0,
+      transcriptionProvider: payload.transcriptionProvider || "",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 export async function processMeetingSession(userId, sessionId, transcriptText = "") {
   const existing = db.prepare("SELECT * FROM meeting_sessions WHERE id = ? AND user_id = ?").get(sessionId, userId);
   if (!existing) {
@@ -1882,6 +3517,65 @@ export async function processMeetingSession(userId, sessionId, transcriptText = 
   return normalizeMeetingSessionRow(db.prepare("SELECT * FROM meeting_sessions WHERE id = ?").get(sessionId));
 }
 
+export async function processMeetingSessionRuntime(userId, sessionId, transcriptText = "") {
+  if (!postgresPrimaryEnabled()) {
+    return processMeetingSession(userId, sessionId, transcriptText);
+  }
+
+  const existing = await getMeetingSessionRuntime(userId, sessionId);
+  if (!existing) {
+    return null;
+  }
+
+  const nextTranscript = String(transcriptText || existing.transcript_text || "").trim();
+  const calendarEvent = await findCalendarEventByIdRuntime(userId, existing.calendar_event_id || "");
+
+  await queryPostgres(`
+    UPDATE meeting_sessions
+    SET status = $1, transcript_text = $2, updated_at = $3
+    WHERE id = $4 AND user_id = $5
+  `, ["processing", nextTranscript, nowIso(), sessionId, userId]);
+
+  try {
+    const analysis = await analyzeMeetingSession({
+      session: { ...existing, transcript_text: nextTranscript },
+      calendarEvent,
+      transcriptText: nextTranscript,
+    });
+
+    const durationMinutes = existing.started_at && existing.ended_at
+      ? Math.max(0, meetingDurationMinutes({ start_at: existing.started_at, end_at: existing.ended_at }))
+      : Number(existing.duration_minutes || 0);
+
+    return await updateMeetingSessionArtifactsRuntime(userId, sessionId, {
+      status: "ready",
+      transcriptText: nextTranscript,
+      utterances: existing.utterances || [],
+      summaryText: analysis.summary,
+      keyPoints: analysis.keyPoints,
+      actionItems: analysis.actionItems,
+      followUpEmail: analysis.followUpEmail,
+      durationMinutes,
+      transcriptionProvider: existing.transcription_provider || "",
+      errorMessage: "",
+    });
+  } catch (error) {
+    await updateMeetingSessionArtifactsRuntime(userId, sessionId, {
+      status: "failed",
+      transcriptText: nextTranscript,
+      utterances: existing.utterances || [],
+      summaryText: existing.summary_text || "",
+      keyPoints: existing.key_points || [],
+      actionItems: existing.action_items || [],
+      followUpEmail: existing.follow_up_email || "",
+      durationMinutes: Number(existing.duration_minutes || 0),
+      transcriptionProvider: existing.transcription_provider || "",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 export async function createMeetingUploadSession(userId, payload = {}) {
   const audioBuffer = payload.audioBuffer;
   if (!audioBuffer || !Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
@@ -1910,6 +3604,54 @@ export async function createMeetingUploadSession(userId, payload = {}) {
   }
 
   return createMeetingSession(userId, {
+    sourceType: "upload",
+    calendarEventId: payload.calendarEventId || "",
+    title: payload.title || payload.sourceFileName || "Registrazione caricata",
+    meetingUrl: payload.meetingUrl || "",
+    transcriptText: transcription.transcript,
+    language: payload.language || defaultNotetaker.language,
+    sourceFileName: payload.sourceFileName || "",
+    sourceFileType: payload.sourceFileType || "",
+    sourceFileSize: Number(payload.sourceFileSize || audioBuffer.length || 0),
+    sourceObjectKey: storedObject.objectKey,
+    sourceStorageProvider: storedObject.provider,
+    transcriptionProvider: "deepgram",
+    utterances: transcription.utterances || [],
+  });
+}
+
+export async function createMeetingUploadSessionRuntime(userId, payload = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return createMeetingUploadSession(userId, payload);
+  }
+
+  const audioBuffer = payload.audioBuffer;
+  if (!audioBuffer || !Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+    const error = new Error("Audio payload required");
+    error.status = 400;
+    throw error;
+  }
+
+  const storedObject = await putStoredObject({
+    keyPrefix: "meeting-recordings",
+    filename: payload.sourceFileName || "recording.bin",
+    contentType: payload.sourceFileType || "application/octet-stream",
+    buffer: audioBuffer,
+  });
+
+  const transcription = await transcribeAudioBuffer({
+    audioBuffer,
+    mimeType: payload.sourceFileType || "application/octet-stream",
+    language: payload.language || defaultNotetaker.language,
+  });
+
+  if (!transcription.transcript) {
+    const error = new Error("Deepgram returned an empty transcript");
+    error.status = 422;
+    throw error;
+  }
+
+  return createMeetingSessionRuntime(userId, {
     sourceType: "upload",
     calendarEventId: payload.calendarEventId || "",
     title: payload.title || payload.sourceFileName || "Registrazione caricata",
@@ -2187,11 +3929,228 @@ function upsertMailboxThread(userId, account, thread, source) {
   return { threadId, processedMessages };
 }
 
+async function findMailboxThreadByExternalThreadIdPostgres(postgres, userId, accountId, externalThreadId) {
+  if (!externalThreadId) {
+    return null;
+  }
+
+  const result = await postgres.query(`
+    SELECT *
+    FROM mail_threads
+    WHERE user_id = $1 AND connected_account_id = $2 AND external_thread_id = $3
+    LIMIT 1
+  `, [userId, accountId, externalThreadId]);
+  return result.rows[0] || null;
+}
+
+async function deleteThreadArtifactsPostgres(postgres, threadId, userId = "") {
+  if (userId) {
+    await postgres.query("DELETE FROM draft_records WHERE user_id = $1 AND thread_id = $2", [userId, threadId]);
+  } else {
+    await postgres.query("DELETE FROM draft_records WHERE thread_id = $1", [threadId]);
+  }
+  await postgres.query("DELETE FROM thread_classifications WHERE thread_id = $1", [threadId]);
+  await postgres.query("DELETE FROM mail_messages WHERE thread_id = $1", [threadId]);
+  await postgres.query("DELETE FROM mail_threads WHERE id = $1", [threadId]);
+}
+
+async function listThreadMessagesPostgres(postgres, threadId) {
+  const result = await postgres.query(`
+    SELECT *
+    FROM mail_messages
+    WHERE thread_id = $1
+    ORDER BY created_at ASC, id ASC
+  `, [threadId]);
+  return result.rows;
+}
+
+async function rebuildThreadFromMessagesPostgres(postgres, threadId) {
+  const threadResult = await postgres.query("SELECT * FROM mail_threads WHERE id = $1 LIMIT 1", [threadId]);
+  const thread = threadResult.rows[0] || null;
+  if (!thread) {
+    return null;
+  }
+
+  const messages = await listThreadMessagesPostgres(postgres, threadId);
+  if (messages.length === 0) {
+    await deleteThreadArtifactsPostgres(postgres, threadId, thread.user_id);
+    return null;
+  }
+
+  const latestMessage = messages.at(-1);
+  const latestIncomingMessage = [...messages].reverse().find((message) => message.role === "incoming") || latestMessage;
+  await postgres.query(`
+    UPDATE mail_threads
+    SET subject = $1, from_name = $2, from_email = $3, snippet = $4, category = $5, status = $6, last_message_at = $7, needs_reply = $8
+    WHERE id = $9
+  `, [
+    latestMessage.message_subject || thread.subject || "(senza oggetto)",
+    latestIncomingMessage.sender_name || thread.from_name,
+    latestIncomingMessage.sender_email || thread.from_email,
+    threadSnippet(latestMessage.content || thread.snippet),
+    latestMessage.role === "incoming" ? "todo" : "fyi",
+    latestMessage.role === "incoming" && Number(latestMessage.is_read) === 0 ? "nuovo" : "archiviata",
+    latestMessage.created_at || thread.last_message_at,
+    latestMessage.role === "incoming" ? 1 : 0,
+    threadId,
+  ]);
+
+  const updated = await postgres.query("SELECT * FROM mail_threads WHERE id = $1 LIMIT 1", [threadId]);
+  return updated.rows[0] || null;
+}
+
+async function persistThreadMessagesPostgres(postgres, threadId, messages, source) {
+  await postgres.query("DELETE FROM mail_messages WHERE thread_id = $1", [threadId]);
+
+  let processedMessages = 0;
+  for (const message of messages) {
+    await postgres.query(`
+      INSERT INTO mail_messages (
+        id, thread_id, external_message_id, role, sender_name, sender_email, message_source, message_subject, is_read, internet_message_id, content, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `, [
+      randomUUID(),
+      threadId,
+      message.externalMessageId || "",
+      message.role,
+      message.senderName || "",
+      message.senderEmail || "",
+      source,
+      message.messageSubject || "",
+      message.isRead === false ? 0 : 1,
+      message.internetMessageId || "",
+      message.content,
+      message.createdAt || nowIso(),
+    ]);
+    processedMessages += 1;
+  }
+
+  return processedMessages;
+}
+
+async function upsertMailboxThreadPostgres(postgres, userId, account, thread, source) {
+  const existing = await findMailboxThreadByExternalThreadIdPostgres(
+    postgres,
+    userId,
+    account.id,
+    thread.externalThreadId || "",
+  );
+
+  const threadId = existing?.id || randomUUID();
+  const row = {
+    id: threadId,
+    user_id: userId,
+    connected_account_id: account.id,
+    external_thread_id: thread.externalThreadId || "",
+    thread_source: source,
+    subject: thread.subject,
+    from_name: thread.fromName,
+    from_email: thread.fromEmail,
+    snippet: thread.snippet,
+    category: thread.category,
+    status: thread.status,
+    last_message_at: thread.lastMessageAt || nowIso(),
+    needs_reply: thread.needsReply,
+  };
+  await upsertPostgresRecord(postgres, "mail_threads", row, ["id"]);
+  const processedMessages = await persistThreadMessagesPostgres(postgres, threadId, thread.messages || [], source);
+  return { threadId, processedMessages };
+}
+
+async function upsertDeltaMessagePostgres(postgres, userId, account, message, source) {
+  let thread = await findMailboxThreadByExternalThreadIdPostgres(postgres, userId, account.id, message.externalThreadId || "");
+  if (!thread) {
+    const threadId = randomUUID();
+    await upsertPostgresRecord(postgres, "mail_threads", {
+      id: threadId,
+      user_id: userId,
+      connected_account_id: account.id,
+      external_thread_id: message.externalThreadId || "",
+      thread_source: source,
+      subject: message.messageSubject || "(senza oggetto)",
+      from_name: message.senderName || account.display_name || account.email,
+      from_email: message.senderEmail || account.email,
+      snippet: threadSnippet(message.content || ""),
+      category: message.role === "incoming" ? "todo" : "fyi",
+      status: message.role === "incoming" && message.isRead === false ? "nuovo" : "archiviata",
+      last_message_at: message.createdAt || nowIso(),
+      needs_reply: message.role === "incoming" ? 1 : 0,
+    }, ["id"]);
+    const created = await postgres.query("SELECT * FROM mail_threads WHERE id = $1 LIMIT 1", [threadId]);
+    thread = created.rows[0] || null;
+  }
+
+  const existingMessageResult = await postgres.query(`
+    SELECT *
+    FROM mail_messages
+    WHERE thread_id = $1 AND external_message_id = $2
+    LIMIT 1
+  `, [thread.id, message.externalMessageId || ""]);
+  const existingMessage = existingMessageResult.rows[0] || null;
+
+  await upsertPostgresRecord(postgres, "mail_messages", {
+    id: existingMessage?.id || randomUUID(),
+    thread_id: thread.id,
+    external_message_id: message.externalMessageId || "",
+    role: message.role,
+    sender_name: message.senderName || "",
+    sender_email: message.senderEmail || "",
+    message_source: source,
+    message_subject: message.messageSubject || "",
+    is_read: message.isRead === false ? 0 : 1,
+    internet_message_id: message.internetMessageId || "",
+    content: message.content,
+    created_at: message.createdAt || existingMessage?.created_at || nowIso(),
+  }, ["id"]);
+
+  await rebuildThreadFromMessagesPostgres(postgres, thread.id);
+  return thread.id;
+}
+
+async function deleteMessageByExternalIdPostgres(postgres, userId, accountId, externalMessageId) {
+  const result = await postgres.query(`
+    SELECT mm.id AS message_id, mm.thread_id
+    FROM mail_messages mm
+    JOIN mail_threads mt ON mt.id = mm.thread_id
+    WHERE mt.user_id = $1 AND mt.connected_account_id = $2 AND mm.external_message_id = $3
+    LIMIT 1
+  `, [userId, accountId, externalMessageId]);
+  const row = result.rows[0] || null;
+  if (!row) {
+    return false;
+  }
+
+  await postgres.query("DELETE FROM mail_messages WHERE id = $1", [row.message_id]);
+  await rebuildThreadFromMessagesPostgres(postgres, row.thread_id);
+  return true;
+}
+
+async function deleteMailboxThreadByExternalThreadIdPostgres(postgres, userId, accountId, externalThreadId) {
+  const thread = await findMailboxThreadByExternalThreadIdPostgres(postgres, userId, accountId, externalThreadId);
+  if (!thread) {
+    return false;
+  }
+
+  await deleteThreadArtifactsPostgres(postgres, thread.id, userId);
+  return true;
+}
+
+async function cleanupLegacyThreadsForAccountPostgres(postgres, userId, accountId) {
+  const result = await postgres.query(`
+    SELECT id
+    FROM mail_threads
+    WHERE user_id = $1 AND connected_account_id = $2 AND external_thread_id = ''
+  `, [userId, accountId]);
+
+  for (const row of result.rows) {
+    await deleteThreadArtifactsPostgres(postgres, row.id, userId);
+  }
+}
+
 async function syncAccountMailbox(userId, account, options = {}) {
   const source = isDemoConnectedAccount(account) ? "demo" : "provider";
-  cleanupLegacyThreadsForAccount(userId, account.id);
-  const syncState = getMailSyncState(account.id);
-  const webhookSubscription = getWebhookSubscription(account.id);
+  const syncState = await getMailSyncStateRuntime(account.id);
+  const webhookSubscription = await getWebhookSubscriptionRuntime(account.id);
   let processedThreads = 0;
   let processedMessages = 0;
 
@@ -2210,9 +4169,82 @@ async function syncAccountMailbox(userId, account, options = {}) {
       }
       : await fetchMailboxRemoteState(account, syncState, {
         onTokenRefresh: async (tokenUpdate) => {
-          updateConnectedAccountTokens(account.id, tokenUpdate);
+          await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
         },
       });
+
+    if (postgresPrimaryEnabled()) {
+      await withPostgresTransaction(async (postgres) => {
+        await cleanupLegacyThreadsForAccountPostgres(postgres, userId, account.id);
+
+        for (const deletedThreadId of remoteState.deletedThreadIds || []) {
+          if (await deleteMailboxThreadByExternalThreadIdPostgres(postgres, userId, account.id, deletedThreadId)) {
+            processedThreads += 1;
+          }
+        }
+
+        for (const deletedMessageId of remoteState.deletedMessageIds || []) {
+          if (await deleteMessageByExternalIdPostgres(postgres, userId, account.id, deletedMessageId)) {
+            processedMessages += 1;
+          }
+        }
+
+        for (const thread of remoteState.threads || []) {
+          const result = await upsertMailboxThreadPostgres(postgres, userId, account, thread, source);
+          processedThreads += 1;
+          processedMessages += result.processedMessages;
+        }
+
+        for (const message of remoteState.upsertMessages || []) {
+          await upsertDeltaMessagePostgres(postgres, userId, account, message, source);
+          processedThreads += 1;
+          processedMessages += 1;
+        }
+      });
+
+      await createSyncRunRuntime({
+        userId,
+        connectedAccountId: account.id,
+        status: "completed",
+        processedThreads,
+        processedMessages,
+      });
+
+      await upsertMailSyncStateRuntime(account.id, {
+        syncCursor: remoteState.syncStatePatch?.syncCursor,
+        deltaLink: remoteState.syncStatePatch?.deltaLink,
+        lastFullSyncAt: remoteState.mode === "full"
+          ? (remoteState.syncStatePatch?.lastFullSyncAt || nowIso())
+          : (syncState?.last_full_sync_at || ""),
+        lastDeltaSyncAt: remoteState.syncStatePatch?.lastDeltaSyncAt || nowIso(),
+        lastWebhookAt: options.webhookAt || syncState?.last_webhook_at || "",
+      });
+
+      if (source !== "demo") {
+        const subscription = await ensureMailboxSubscription(account, webhookSubscription, {
+          onTokenRefresh: async (tokenUpdate) => {
+            await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
+          },
+        });
+
+        if (subscription) {
+          await upsertWebhookSubscriptionRuntime(account.id, subscription);
+          if (subscription.syncCursor) {
+            await upsertMailSyncStateRuntime(account.id, {
+              syncCursor: subscription.syncCursor,
+            });
+          }
+        }
+      }
+
+      return {
+        processedThreads,
+        processedMessages,
+        source,
+      };
+    }
+
+    cleanupLegacyThreadsForAccount(userId, account.id);
 
     for (const deletedThreadId of remoteState.deletedThreadIds || []) {
       if (deleteMailboxThreadByExternalThreadId(userId, account.id, deletedThreadId)) {
@@ -2238,7 +4270,7 @@ async function syncAccountMailbox(userId, account, options = {}) {
       processedMessages += 1;
     }
 
-    createSyncRun({
+    await createSyncRunRuntime({
       userId,
       connectedAccountId: account.id,
       status: "completed",
@@ -2246,7 +4278,7 @@ async function syncAccountMailbox(userId, account, options = {}) {
       processedMessages,
     });
 
-    upsertMailSyncState(account.id, {
+    await upsertMailSyncStateRuntime(account.id, {
       syncCursor: remoteState.syncStatePatch?.syncCursor,
       deltaLink: remoteState.syncStatePatch?.deltaLink,
       lastFullSyncAt: remoteState.mode === "full"
@@ -2259,14 +4291,14 @@ async function syncAccountMailbox(userId, account, options = {}) {
     if (source !== "demo") {
       const subscription = await ensureMailboxSubscription(account, webhookSubscription, {
         onTokenRefresh: async (tokenUpdate) => {
-          updateConnectedAccountTokens(account.id, tokenUpdate);
+          await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
         },
       });
 
       if (subscription) {
-        upsertWebhookSubscription(account.id, subscription);
+        await upsertWebhookSubscriptionRuntime(account.id, subscription);
         if (subscription.syncCursor) {
-          upsertMailSyncState(account.id, {
+          await upsertMailSyncStateRuntime(account.id, {
             syncCursor: subscription.syncCursor,
           });
         }
@@ -2279,7 +4311,7 @@ async function syncAccountMailbox(userId, account, options = {}) {
       source,
     };
   } catch (error) {
-    createSyncRun({
+    await createSyncRunRuntime({
       userId,
       connectedAccountId: account.id,
       status: "failed",
@@ -2289,7 +4321,7 @@ async function syncAccountMailbox(userId, account, options = {}) {
     });
 
     if (source !== "demo") {
-      upsertWebhookSubscription(account.id, {
+      await upsertWebhookSubscriptionRuntime(account.id, {
         status: error?.name === "ProviderAuthError" ? "auth_error" : "error",
       });
     }
@@ -2322,13 +4354,32 @@ export async function syncMailbox(userId, accountId = null, options = {}) {
   };
 }
 
+export async function syncMailboxRuntime(userId, accountId = null, options = {}) {
+  const accounts = accountId
+    ? (await listConnectedAccountsRuntime(userId)).filter((account) => account.id === accountId)
+    : await listConnectedAccountsRuntime(userId);
+
+  let processedThreads = 0;
+  let processedMessages = 0;
+
+  for (const account of accounts) {
+    const item = await syncAccountMailbox(userId, account, options);
+    processedThreads += item.processedThreads;
+    processedMessages += item.processedMessages;
+  }
+
+  const categorization = await categorizeMailboxRuntime(userId, accountId ? { accountId } : {});
+  const result = {
+    syncedAccounts: accounts.length,
+    processedThreads,
+    processedMessages,
+    categorizedThreads: categorization.processedThreads,
+  };
+  return result;
+}
+
 export async function maintainWebhookSubscriptions() {
-  const accounts = db.prepare(`
-    SELECT *
-    FROM connected_accounts
-    WHERE provider IN ('google', 'microsoft')
-    ORDER BY created_at DESC
-  `).all();
+  const accounts = await listAllConnectedAccountsRuntime();
 
   let checkedAccounts = 0;
   let renewedSubscriptions = 0;
@@ -2340,12 +4391,12 @@ export async function maintainWebhookSubscriptions() {
     }
 
     checkedAccounts += 1;
-    const existingSubscription = getWebhookSubscription(account.id);
+    const existingSubscription = await getWebhookSubscriptionRuntime(account.id);
 
     try {
       const subscription = await ensureMailboxSubscription(account, existingSubscription, {
         onTokenRefresh: async (tokenUpdate) => {
-          updateConnectedAccountTokens(account.id, tokenUpdate);
+          await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
         },
       });
 
@@ -2353,16 +4404,16 @@ export async function maintainWebhookSubscriptions() {
         continue;
       }
 
-      upsertWebhookSubscription(account.id, subscription);
+      await upsertWebhookSubscriptionRuntime(account.id, subscription);
       if (subscription.syncCursor) {
-        upsertMailSyncState(account.id, {
+        await upsertMailSyncStateRuntime(account.id, {
           syncCursor: subscription.syncCursor,
         });
       }
       renewedSubscriptions += 1;
     } catch (error) {
       failedSubscriptions += 1;
-      upsertWebhookSubscription(account.id, {
+      await upsertWebhookSubscriptionRuntime(account.id, {
         status: error?.name === "ProviderAuthError" ? "auth_error" : "error",
       });
     }
@@ -2402,6 +4453,41 @@ export function listMailThreads(userId) {
   });
 }
 
+export async function listMailThreadsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listMailThreads(userId);
+  }
+
+  try {
+    const rows = await queryPostgresRows(`
+      SELECT
+        mt.*,
+        ca.email AS account_email,
+        tc.topic_label,
+        tc.inbox_action,
+        tc.reason AS category_reason,
+        tc.confidence,
+        tc.updated_at AS categorized_at
+      FROM mail_threads mt
+      LEFT JOIN connected_accounts ca ON ca.id = mt.connected_account_id
+      LEFT JOIN thread_classifications tc ON tc.thread_id = mt.id
+      WHERE mt.user_id = $1
+      ORDER BY mt.last_message_at DESC
+    `, [userId]);
+
+    return rows.map((thread) => {
+      const eligibility = evaluateDraftEligibility(thread, thread);
+      return {
+        ...thread,
+        draft_eligible: eligibility.eligible,
+        draft_eligibility_reason: eligibility.reason,
+      };
+    });
+  } catch {
+    return listMailThreads(userId);
+  }
+}
+
 function listThreadsForCategorization(userId, { accountId = null, threadId = null } = {}) {
   const filters = ["user_id = ?"];
   const params = [userId];
@@ -2424,6 +4510,36 @@ function listThreadsForCategorization(userId, { accountId = null, threadId = nul
   `;
 
   return db.prepare(query).all(...params);
+}
+
+async function listThreadsForCategorizationRuntime(userId, { accountId = null, threadId = null } = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return listThreadsForCategorization(userId, { accountId, threadId });
+  }
+
+  const filters = ["user_id = $1"];
+  const params = [userId];
+
+  if (accountId) {
+    params.push(accountId);
+    filters.push(`connected_account_id = $${params.length}`);
+  }
+
+  if (threadId) {
+    params.push(threadId);
+    filters.push(`id = $${params.length}`);
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT *
+      FROM mail_threads
+      WHERE ${filters.join(" AND ")}
+      ORDER BY last_message_at DESC
+    `, params);
+  } catch {
+    return listThreadsForCategorization(userId, { accountId, threadId });
+  }
 }
 
 export async function categorizeMailbox(userId, { accountId = null, threadId = null } = {}) {
@@ -2496,6 +4612,67 @@ export async function categorizeMailbox(userId, { accountId = null, threadId = n
   };
 }
 
+export async function categorizeMailboxRuntime(userId, { accountId = null, threadId = null } = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return categorizeMailbox(userId, { accountId, threadId });
+  }
+
+  const threads = await listThreadsForCategorizationRuntime(userId, { accountId, threadId });
+  const settings = await getSettingRuntime("categorization", defaultCategorization);
+  const counts = {};
+  const topics = {};
+  let updatedThreads = 0;
+  const now = nowIso();
+  const classifications = await classifyMailThreads(threads, settings);
+
+  await withPostgresTransaction(async (postgres) => {
+    for (const thread of threads) {
+      const classification = classifications.get(thread.id);
+      if (!classification) {
+        continue;
+      }
+
+      await postgres.query("UPDATE mail_threads SET category = $1 WHERE id = $2", [
+        classification.category,
+        thread.id,
+      ]);
+
+      await upsertPostgresRecord(postgres, "thread_classifications", {
+        thread_id: thread.id,
+        user_id: userId,
+        category: classification.category,
+        topic_label: classification.topicLabel,
+        inbox_action: classification.inboxAction,
+        reason: classification.reason,
+        confidence: classification.confidence,
+        updated_at: now,
+      }, ["thread_id"]);
+
+      updatedThreads += 1;
+      counts[classification.category] = (counts[classification.category] || 0) + 1;
+      if (classification.topicLabel) {
+        topics[classification.topicLabel] = (topics[classification.topicLabel] || 0) + 1;
+      }
+    }
+
+    await upsertPostgresRecord(postgres, "classification_runs", {
+      id: randomUUID(),
+      user_id: userId,
+      processed_threads: threads.length,
+      updated_threads: updatedThreads,
+      created_at: now,
+    }, ["id"]);
+  });
+
+  return {
+    processedThreads: threads.length,
+    updatedThreads,
+    counts,
+    topics,
+    lastRunAt: now,
+  };
+}
+
 export function listDraftRecords(userId) {
   return db.prepare(`
     SELECT dr.*, mt.subject AS thread_subject, mt.from_name, mt.from_email, ca.provider AS account_provider, ca.email AS account_email
@@ -2507,6 +4684,25 @@ export function listDraftRecords(userId) {
   `).all(userId);
 }
 
+export async function listDraftRecordsRuntime(userId) {
+  if (!postgresPrimaryEnabled()) {
+    return listDraftRecords(userId);
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT dr.*, mt.subject AS thread_subject, mt.from_name, mt.from_email, ca.provider AS account_provider, ca.email AS account_email
+      FROM draft_records dr
+      JOIN mail_threads mt ON mt.id = dr.thread_id
+      JOIN connected_accounts ca ON ca.id = dr.connected_account_id
+      WHERE dr.user_id = $1
+      ORDER BY dr.updated_at DESC
+    `, [userId]);
+  } catch {
+    return listDraftRecords(userId);
+  }
+}
+
 function listThreadMessages(threadId) {
   return db.prepare(`
     SELECT *
@@ -2514,6 +4710,23 @@ function listThreadMessages(threadId) {
     WHERE thread_id = ?
     ORDER BY datetime(created_at) ASC, id ASC
   `).all(threadId);
+}
+
+async function listThreadMessagesRuntime(threadId) {
+  if (!postgresPrimaryEnabled()) {
+    return listThreadMessages(threadId);
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT *
+      FROM mail_messages
+      WHERE thread_id = $1
+      ORDER BY created_at ASC, id ASC
+    `, [threadId]);
+  } catch {
+    return listThreadMessages(threadId);
+  }
 }
 
 function trimPromptChunk(value = "", limit = 1200) {
@@ -2538,13 +4751,13 @@ function fallbackDraftContent(thread, account, preferences) {
   ].join("\n");
 }
 
-async function generateDraftContent(thread, account, preferences) {
+async function generateDraftContent(thread, account, preferences, messageRows = null) {
   const fallback = fallbackDraftContent(thread, account, preferences);
   if (!hasGeminiCredentials()) {
     return fallback;
   }
 
-  const messages = listThreadMessages(thread.id)
+  const messages = (messageRows || listThreadMessages(thread.id))
     .slice(-8)
     .map((message) => [
       `[${message.role} | ${message.sender_name || message.sender_email || "sconosciuto"} | ${message.created_at}]`,
@@ -2600,8 +4813,40 @@ function getDraftRecordById(userId, draftId) {
   return db.prepare("SELECT * FROM draft_records WHERE id = ? AND user_id = ?").get(draftId, userId);
 }
 
+async function getDraftRecordByIdRuntime(userId, draftId) {
+  if (!postgresPrimaryEnabled()) {
+    return getDraftRecordById(userId, draftId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM draft_records WHERE id = $1 AND user_id = $2",
+      [draftId, userId],
+    );
+    return row || getDraftRecordById(userId, draftId);
+  } catch {
+    return getDraftRecordById(userId, draftId);
+  }
+}
+
 function getThreadClassification(threadId) {
   return db.prepare("SELECT * FROM thread_classifications WHERE thread_id = ?").get(threadId) || null;
+}
+
+async function getThreadClassificationRuntime(threadId) {
+  if (!postgresPrimaryEnabled()) {
+    return getThreadClassification(threadId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM thread_classifications WHERE thread_id = $1",
+      [threadId],
+    );
+    return row || getThreadClassification(threadId);
+  } catch {
+    return getThreadClassification(threadId);
+  }
 }
 
 function getLatestReplyTargetMessage(threadId) {
@@ -2624,6 +4869,35 @@ function getLatestReplyTargetMessage(threadId) {
     ORDER BY datetime(created_at) DESC, id DESC
     LIMIT 1
   `).get(threadId);
+}
+
+async function getLatestReplyTargetMessageRuntime(threadId) {
+  if (!postgresPrimaryEnabled()) {
+    return getLatestReplyTargetMessage(threadId);
+  }
+
+  try {
+    const latestIncoming = await queryPostgresRow(`
+      SELECT *
+      FROM mail_messages
+      WHERE thread_id = $1 AND role = 'incoming' AND external_message_id != ''
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `, [threadId]);
+    if (latestIncoming) {
+      return latestIncoming;
+    }
+
+    return await queryPostgresRow(`
+      SELECT *
+      FROM mail_messages
+      WHERE thread_id = $1 AND external_message_id != ''
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `, [threadId]);
+  } catch {
+    return getLatestReplyTargetMessage(threadId);
+  }
 }
 
 function updateDraftProviderState(draftId, patch) {
@@ -2656,6 +4930,47 @@ function updateDraftProviderState(draftId, patch) {
   );
 
   return db.prepare("SELECT * FROM draft_records WHERE id = ?").get(draftId);
+}
+
+async function updateDraftProviderStateRuntime(userId, draftId, patch) {
+  if (!postgresPrimaryEnabled()) {
+    return updateDraftProviderState(draftId, patch);
+  }
+
+  try {
+    const existing = await getDraftRecordByIdRuntime(userId, draftId);
+    if (!existing) {
+      return null;
+    }
+
+    const next = {
+      provider_draft_id: patch.providerDraftId ?? existing.provider_draft_id ?? "",
+      provider_message_id: patch.providerMessageId ?? existing.provider_message_id ?? "",
+      provider_push_status: patch.providerPushStatus ?? existing.provider_push_status ?? "local_only",
+      provider_last_error: patch.providerLastError ?? existing.provider_last_error ?? "",
+      provider_pushed_at: patch.providerPushedAt ?? existing.provider_pushed_at ?? "",
+      updated_at: patch.updatedAt ?? nowIso(),
+    };
+
+    await queryPostgres(`
+      UPDATE draft_records
+      SET provider_draft_id = $1, provider_message_id = $2, provider_push_status = $3, provider_last_error = $4, provider_pushed_at = $5, updated_at = $6
+      WHERE id = $7 AND user_id = $8
+    `, [
+      next.provider_draft_id,
+      next.provider_message_id,
+      next.provider_push_status,
+      next.provider_last_error,
+      next.provider_pushed_at,
+      next.updated_at,
+      draftId,
+      userId,
+    ]);
+
+    return getDraftRecordByIdRuntime(userId, draftId);
+  } catch {
+    return updateDraftProviderState(draftId, patch);
+  }
 }
 
 async function writeDraftToProvider(userId, draftId) {
@@ -2709,6 +5024,72 @@ async function writeDraftToProvider(userId, draftId) {
     });
   } catch (error) {
     updateDraftProviderState(draft.id, {
+      providerPushStatus: "push_failed",
+      providerLastError: error instanceof Error ? error.message : String(error),
+      providerPushedAt: draft.provider_pushed_at || "",
+    });
+    throw error;
+  }
+}
+
+async function writeDraftToProviderRuntime(userId, draftId) {
+  if (!postgresPrimaryEnabled()) {
+    return writeDraftToProvider(userId, draftId);
+  }
+
+  const draft = await getDraftRecordByIdRuntime(userId, draftId);
+  if (!draft) {
+    return null;
+  }
+
+  const thread = await queryPostgresRow(
+    "SELECT * FROM mail_threads WHERE id = $1 AND user_id = $2",
+    [draft.thread_id, userId],
+  );
+  if (!thread) {
+    return null;
+  }
+
+  const account = await findConnectedAccountByIdRuntime(draft.connected_account_id);
+  if (!account || account.user_id !== userId) {
+    return null;
+  }
+
+  if (isDemoConnectedAccount(account)) {
+    return updateDraftProviderStateRuntime(userId, draft.id, {
+      providerPushStatus: "local_only",
+      providerLastError: "",
+      providerPushedAt: "",
+    });
+  }
+
+  const replyTarget = await getLatestReplyTargetMessageRuntime(thread.id);
+
+  try {
+    const result = await upsertProviderDraft(account, {
+      providerDraftId: draft.provider_draft_id || "",
+      providerMessageId: draft.provider_message_id || "",
+      threadExternalId: thread.external_thread_id || "",
+      replyToExternalMessageId: replyTarget?.external_message_id || "",
+      replyToInternetMessageId: replyTarget?.internet_message_id || "",
+      toEmail: thread.from_email || replyTarget?.sender_email || "",
+      subject: draft.subject,
+      content: draft.content,
+    }, {
+      onTokenRefresh: async (tokenUpdate) => {
+        await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
+      },
+    });
+
+    return updateDraftProviderStateRuntime(userId, draft.id, {
+      providerDraftId: result.providerDraftId,
+      providerMessageId: result.providerMessageId,
+      providerPushStatus: "synced",
+      providerLastError: "",
+      providerPushedAt: result.pushedAt || nowIso(),
+    });
+  } catch (error) {
+    await updateDraftProviderStateRuntime(userId, draft.id, {
       providerPushStatus: "push_failed",
       providerLastError: error instanceof Error ? error.message : String(error),
       providerPushedAt: draft.provider_pushed_at || "",
@@ -2793,6 +5174,93 @@ export async function createDraftForThread(userId, threadId, options = {}) {
   }
 }
 
+export async function createDraftForThreadRuntime(userId, threadId, options = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return createDraftForThread(userId, threadId, options);
+  }
+
+  const thread = await queryPostgresRow(
+    "SELECT * FROM mail_threads WHERE id = $1 AND user_id = $2",
+    [threadId, userId],
+  );
+  if (!thread) {
+    return null;
+  }
+
+  const account = await findConnectedAccountByIdRuntime(thread.connected_account_id);
+  if (!account) {
+    return null;
+  }
+
+  const classification = await getThreadClassificationRuntime(thread.id);
+  const eligibility = evaluateDraftEligibility(thread, classification);
+  if (!eligibility.eligible && options.force !== true) {
+    const error = new Error(eligibility.reason);
+    error.status = 400;
+    throw error;
+  }
+
+  const preferences = await getSettingRuntime("drafts", defaultDrafts);
+  const existing = await queryPostgresRow(
+    "SELECT * FROM draft_records WHERE thread_id = $1 AND user_id = $2",
+    [threadId, userId],
+  );
+  const now = nowIso();
+  const toneLabel = preferences.customTone && preferences.customToneText
+    ? preferences.customToneText
+    : "Tono professionale e conciso";
+  const messages = await listThreadMessagesRuntime(thread.id);
+  const content = await generateDraftContent(thread, account, preferences, messages);
+
+  if (existing) {
+    await queryPostgres(`
+      UPDATE draft_records
+      SET subject = $1, content = $2, tone = $3, status = $4, updated_at = $5
+      WHERE id = $6 AND user_id = $7
+    `, [`Re: ${thread.subject}`, content, toneLabel, "generated", now, existing.id, userId]);
+    const updated = await getDraftRecordByIdRuntime(userId, existing.id);
+    if (options.pushToProvider === false) {
+      return updated;
+    }
+
+    try {
+      return await writeDraftToProviderRuntime(userId, updated.id);
+    } catch {
+      return getDraftRecordByIdRuntime(userId, updated.id);
+    }
+  }
+
+  const id = randomUUID();
+  await upsertPostgresNow("draft_records", {
+    id,
+    user_id: userId,
+    connected_account_id: thread.connected_account_id,
+    thread_id: threadId,
+    subject: `Re: ${thread.subject}`,
+    content,
+    tone: toneLabel,
+    status: "generated",
+    provider_draft_id: "",
+    provider_message_id: "",
+    provider_push_status: isDemoConnectedAccount(account) ? "local_only" : "pending",
+    provider_last_error: "",
+    provider_pushed_at: "",
+    created_at: now,
+    updated_at: now,
+  }, ["id"]);
+
+  const created = await getDraftRecordByIdRuntime(userId, id);
+  if (options.pushToProvider === false) {
+    return created;
+  }
+
+  try {
+    return await writeDraftToProviderRuntime(userId, created.id);
+  } catch {
+    return getDraftRecordByIdRuntime(userId, created.id);
+  }
+}
+
 export async function pushDraftRecord(userId, draftId) {
   const draft = getDraftRecordById(userId, draftId);
   if (!draft) {
@@ -2800,6 +5268,14 @@ export async function pushDraftRecord(userId, draftId) {
   }
 
   return writeDraftToProvider(userId, draftId);
+}
+
+export async function pushDraftRecordRuntime(userId, draftId) {
+  if (!postgresPrimaryEnabled()) {
+    return pushDraftRecord(userId, draftId);
+  }
+
+  return writeDraftToProviderRuntime(userId, draftId);
 }
 
 export async function deleteDraftRecord(userId, draftId, options = {}) {
@@ -2841,6 +5317,50 @@ export async function deleteDraftRecord(userId, draftId, options = {}) {
   };
 }
 
+export async function deleteDraftRecordRuntime(userId, draftId, options = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return deleteDraftRecord(userId, draftId, options);
+  }
+
+  const draft = await getDraftRecordByIdRuntime(userId, draftId);
+  if (!draft) {
+    return null;
+  }
+
+  const account = await findConnectedAccountByIdRuntime(draft.connected_account_id);
+  if (
+    options.deleteProvider !== false
+    && account
+    && account.user_id === userId
+    && !isDemoConnectedAccount(account)
+    && (draft.provider_draft_id || draft.provider_message_id)
+  ) {
+    try {
+      await deleteProviderDraft(account, {
+        providerDraftId: draft.provider_draft_id || "",
+        providerMessageId: draft.provider_message_id || "",
+      }, {
+        onTokenRefresh: async (tokenUpdate) => {
+          await updateConnectedAccountTokensRuntime(account.id, tokenUpdate);
+        },
+      });
+    } catch (error) {
+      await updateDraftProviderStateRuntime(userId, draft.id, {
+        providerPushStatus: "push_failed",
+        providerLastError: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  await queryPostgres("DELETE FROM draft_records WHERE id = $1 AND user_id = $2", [draftId, userId]);
+  return {
+    id: draft.id,
+    subject: draft.subject,
+    providerDeleted: Boolean(draft.provider_draft_id || draft.provider_message_id),
+  };
+}
+
 export async function generateDraftsForPendingThreads(userId, options = {}) {
   const threads = db.prepare(`
     SELECT * FROM mail_threads
@@ -2860,5 +5380,33 @@ export async function generateDraftsForPendingThreads(userId, options = {}) {
       createdDrafts.push(draft);
     }
   }
+  return createdDrafts;
+}
+
+export async function generateDraftsForPendingThreadsRuntime(userId, options = {}) {
+  if (!postgresPrimaryEnabled()) {
+    return generateDraftsForPendingThreads(userId, options);
+  }
+
+  const threads = await queryPostgresRows(`
+    SELECT *
+    FROM mail_threads
+    WHERE user_id = $1 AND needs_reply = 1 AND category = 'todo'
+    ORDER BY last_message_at DESC
+  `, [userId]);
+
+  const createdDrafts = [];
+  for (const thread of threads) {
+    const classification = await getThreadClassificationRuntime(thread.id);
+    if (!evaluateDraftEligibility(thread, classification).eligible) {
+      continue;
+    }
+
+    const draft = await createDraftForThreadRuntime(userId, thread.id, options);
+    if (draft) {
+      createdDrafts.push(draft);
+    }
+  }
+
   return createdDrafts;
 }
