@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, ChevronDown } from 'lucide-react';
+import { api } from '@/api/privateApiClient';
 
 const Toggle = ({ checked, onChange }) => (
   <button
@@ -12,12 +13,25 @@ const Toggle = ({ checked, onChange }) => (
 );
 
 export default function Notetaker() {
+  const uploadInputRef = useRef(null);
   const [recordModal, setRecordModal] = useState(false);
   const [joinModal, setJoinModal] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState(false);
   const [settingsTab, setSettingsTab] = useState('general');
   const [meetingUrl, setMeetingUrl] = useState('');
   const [recordDropdown, setRecordDropdown] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [selectedEventId, setSelectedEventId] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [recordTitle, setRecordTitle] = useState('');
+  const [recordTranscript, setRecordTranscript] = useState('');
+  const [joinTitle, setJoinTitle] = useState('');
+  const [joinTranscript, setJoinTranscript] = useState('');
+  const [submittingRecord, setSubmittingRecord] = useState(false);
+  const [submittingJoin, setSubmittingJoin] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackTone, setFeedbackTone] = useState('success');
 
   const [settings, setSettings] = useState({
     autoJoin: 'all',
@@ -29,8 +43,154 @@ export default function Notetaker() {
     disablePrereadSharing: false,
   });
 
+  useEffect(() => {
+    const loadState = async () => {
+      try {
+        const [settingsPayload, calendarPayload, sessionsPayload] = await Promise.all([
+          api.get('/settings/notetaker'),
+          api.get('/calendar/events?limit=12'),
+          api.get('/notetaker/sessions'),
+        ]);
+
+        if (settingsPayload.value) {
+          setSettings(settingsPayload.value);
+        }
+        setCalendarEvents(calendarPayload.events || []);
+        setSessions(sessionsPayload.sessions || []);
+      } catch (error) {
+        console.error('Failed to load notetaker settings', error);
+      }
+    };
+
+    loadState();
+  }, []);
+
+  const saveSettings = async () => {
+    try {
+      await api.put('/settings/notetaker', settings);
+      setSettingsPanel(false);
+    } catch (error) {
+      console.error('Failed to save notetaker settings', error);
+    }
+  };
+
+  const loadSessions = async () => {
+    try {
+      const payload = await api.get('/notetaker/sessions');
+      setSessions(payload.sessions || []);
+    } catch (error) {
+      console.error('Failed to load notetaker sessions', error);
+    }
+  };
+
+  const selectedCalendarEvent = calendarEvents.find((event) => event.id === selectedEventId) || null;
+
+  const createRecordSession = async () => {
+    setSubmittingRecord(true);
+    setFeedbackMessage('');
+    setFeedbackTone('success');
+    try {
+      const payload = await api.post('/notetaker/sessions/record', {
+        calendarEventId: selectedEventId || '',
+        title: recordTitle,
+        meetingUrl: selectedCalendarEvent?.meeting_url || '',
+        transcriptText: recordTranscript,
+        language: settings.language,
+      });
+      await loadSessions();
+      setFeedbackMessage(payload.session?.status === 'ready' ? 'Recap riunione generato' : 'Sessione di registrazione creata');
+      setRecordModal(false);
+      setRecordTitle('');
+      setRecordTranscript('');
+      setSelectedEventId('');
+    } catch (error) {
+      console.error('Failed to create record session', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Creazione sessione fallita');
+    } finally {
+      setSubmittingRecord(false);
+    }
+  };
+
+  const createJoinSession = async () => {
+    setSubmittingJoin(true);
+    setFeedbackMessage('');
+    setFeedbackTone('success');
+    try {
+      const payload = await api.post('/notetaker/sessions/join', {
+        calendarEventId: selectedEventId || '',
+        title: joinTitle,
+        meetingUrl,
+        transcriptText: joinTranscript,
+        language: settings.language,
+      });
+      await loadSessions();
+      setFeedbackMessage(payload.session?.status === 'ready' ? 'Recap videochiamata generato' : 'Sessione video creata');
+      setJoinModal(false);
+      setJoinTitle('');
+      setJoinTranscript('');
+      setMeetingUrl('');
+      setSelectedEventId('');
+    } catch (error) {
+      console.error('Failed to create join session', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Creazione sessione fallita');
+    } finally {
+      setSubmittingJoin(false);
+    }
+  };
+
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const base64 = result.includes(',') ? result.split(',').at(-1) : result;
+      resolve(base64 || '');
+    };
+    reader.onerror = () => reject(new Error('Impossibile leggere il file'));
+    reader.readAsDataURL(file);
+  });
+
+  const uploadRecording = async (file) => {
+    if (!file) {
+      return;
+    }
+
+    setUploadingFile(true);
+    setFeedbackMessage('');
+    setFeedbackTone('success');
+    try {
+      const audioBase64 = await fileToBase64(file);
+      const payload = await api.post('/notetaker/sessions/upload', {
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        audioBase64,
+        language: settings.language,
+      });
+      await loadSessions();
+      setFeedbackMessage(payload.session?.status === 'ready' ? 'Registrazione caricata e trascritta' : 'Registrazione caricata');
+    } catch (error) {
+      console.error('Failed to upload recording', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Upload registrazione fallito');
+    } finally {
+      if (uploadInputRef.current) {
+        uploadInputRef.current.value = '';
+      }
+      setUploadingFile(false);
+    }
+  };
+
   return (
     <div className="h-full overflow-auto">
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="audio/*,.mp3,.wav,.m4a,.webm,.ogg"
+        className="hidden"
+        onChange={(event) => uploadRecording(event.target.files?.[0])}
+      />
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
         <h1 className="text-base font-semibold text-gray-900">Notetaker</h1>
         <div className="flex items-center gap-2">
@@ -67,10 +227,13 @@ export default function Notetaker() {
                     👤 Invita alla riunione
                   </button>
                   <button
-                    onClick={() => setRecordDropdown(false)}
+                    onClick={() => {
+                      setRecordDropdown(false);
+                      uploadInputRef.current?.click();
+                    }}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
                   >
-                    📤 Carica registrazione
+                    📤 {uploadingFile ? 'Caricamento...' : 'Carica registrazione'}
                   </button>
                 </div>
               </>
@@ -83,6 +246,107 @@ export default function Notetaker() {
         <div className="text-center mb-8">
           <div className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Conosci il tuo nuovo AI Notetaker</div>
           <h2 className="text-2xl font-black text-gray-900">Non prendere più note nelle riunioni</h2>
+        </div>
+
+        {feedbackMessage && (
+          <div className={`mb-4 rounded-xl px-4 py-3 text-sm ${
+            feedbackTone === 'error'
+              ? 'border border-red-200 bg-red-50 text-red-700'
+              : 'border border-green-200 bg-green-50 text-green-700'
+          }`}>
+            {feedbackMessage}
+          </div>
+        )}
+
+        <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Prossime riunioni rilevate</h3>
+              <p className="text-xs text-gray-500">Il backend privato legge gli eventi dai calendari collegati e li prepara per il Notetaker.</p>
+            </div>
+            <span className="text-xs text-gray-400">{calendarEvents.length} eventi in finestra</span>
+          </div>
+          <div className="space-y-2">
+            {calendarEvents.slice(0, 4).map(event => (
+              <div key={event.id} className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2">
+                <div>
+                  <div className="text-sm font-medium text-gray-900">{event.title}</div>
+                  <div className="text-xs text-gray-500">{event.time_label} · {event.account_email || 'account collegato'}</div>
+                </div>
+                <div className="text-[11px] text-brand">{event.join_provider ? event.join_provider.replaceAll('_', ' ') : 'nessun link'}</div>
+              </div>
+            ))}
+            {!calendarEvents.length && (
+              <div className="rounded-lg border border-dashed border-gray-200 px-3 py-4 text-sm text-gray-400">
+                Nessuna riunione trovata. Prima sincronizza Google Calendar o Outlook da Pianificazione.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Sessioni Notetaker recenti</h3>
+              <p className="text-xs text-gray-500">Qui trovi recap, key points e action items generati dal backend privato.</p>
+            </div>
+            <span className="text-xs text-gray-400">{sessions.length} sessioni</span>
+          </div>
+          <div className="space-y-3">
+            {sessions.slice(0, 5).map(session => (
+              <div key={session.id} className="rounded-xl border border-gray-100 p-4">
+                <div className="flex items-start justify-between gap-4 mb-2">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">{session.title}</div>
+                    <div className="text-xs text-gray-500">
+                      {session.source_type === 'join' ? 'Videochiamata' : 'Registrazione'} · {session.join_provider ? session.join_provider.replaceAll('_', ' ') : 'manuale'}
+                    </div>
+                  </div>
+                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                    session.status === 'ready'
+                      ? 'bg-green-100 text-green-700'
+                      : session.status === 'processing'
+                        ? 'bg-amber-100 text-amber-700'
+                        : session.status === 'failed'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-gray-100 text-gray-600'
+                  }`}>
+                    {session.status}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-600 mb-3">
+                  {session.summary_text || 'Sessione creata. Aggiungi un transcript per ottenere un recap completo.'}
+                </p>
+                {session.key_points?.length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Key points</div>
+                    <div className="space-y-1">
+                      {session.key_points.slice(0, 3).map(point => (
+                        <div key={point} className="text-sm text-gray-600">• {point}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {session.action_items?.length > 0 && (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Action items</div>
+                    <div className="space-y-1">
+                      {session.action_items.slice(0, 3).map((item, index) => (
+                        <div key={`${session.id}-${index}`} className="text-sm text-gray-600">
+                          • <span className="font-medium text-gray-800">{item.owner || 'Da assegnare'}:</span> {item.task}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {!sessions.length && (
+              <div className="rounded-lg border border-dashed border-gray-200 px-3 py-4 text-sm text-gray-400">
+                Nessuna sessione ancora creata. Usa i pulsanti qui sopra per avviare una registrazione o collegare una videochiamata.
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-5 mb-10">
@@ -167,14 +431,38 @@ export default function Notetaker() {
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Collega a evento (opzionale)</label>
                 <div className="relative">
-                  <select className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white appearance-none focus:outline-none">
-                    <option>Nuova riunione</option>
+                  <select
+                    value={selectedEventId}
+                    onChange={(event) => setSelectedEventId(event.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white appearance-none focus:outline-none"
+                  >
+                    <option value="">Nuova riunione</option>
+                    {calendarEvents.map(event => (
+                      <option key={event.id} value={event.id}>
+                        {event.title} · {event.time_label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Titolo riunione (opzionale)</label>
-                <input type="text" placeholder="Inserisci il titolo..." className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none" />
+                <input
+                  type="text"
+                  value={recordTitle}
+                  onChange={event => setRecordTitle(event.target.value)}
+                  placeholder="Inserisci il titolo..."
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Transcript o note (opzionale)</label>
+                <textarea
+                  value={recordTranscript}
+                  onChange={event => setRecordTranscript(event.target.value)}
+                  placeholder="Incolla note rapide o un transcript per ottenere subito summary e action items..."
+                  className="min-h-28 w-full resize-y rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+                />
               </div>
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Microfono predefinito</label>
@@ -186,10 +474,14 @@ export default function Notetaker() {
             </div>
             <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
               <div className="text-xs font-semibold text-red-700 mb-0.5">Accesso al microfono richiesto</div>
-              <div className="text-xs text-red-600">Consenti l'accesso al microfono nelle impostazioni del browser per registrare.</div>
+              <div className="text-xs text-red-600">Finche non colleghiamo la cattura audio browser-side, puoi creare la sessione e aggiungere note o transcript manuali.</div>
             </div>
-            <button className="w-full bg-gray-200 text-gray-400 py-3 rounded-xl font-semibold text-sm cursor-not-allowed">
-              Inizia registrazione
+            <button
+              onClick={createRecordSession}
+              disabled={submittingRecord}
+              className="w-full bg-brand text-white py-3 rounded-xl font-semibold text-sm hover:bg-brand/90 transition-colors disabled:cursor-wait disabled:opacity-70"
+            >
+              {submittingRecord ? 'Creazione in corso...' : 'Crea sessione'}
             </button>
           </div>
         </div>
@@ -210,6 +502,40 @@ export default function Notetaker() {
             </div>
             <p className="text-xs text-gray-500 mb-4">Invita il Notetaker AI di MailMind alla tua riunione online per registrare e generare sintesi e trascrizioni.</p>
             <div className="mb-4">
+              <label className="text-xs text-gray-500 mb-1 block">Evento collegato (opzionale)</label>
+              <select
+                value={selectedEventId}
+                onChange={(event) => {
+                  setSelectedEventId(event.target.value);
+                  const selected = calendarEvents.find((item) => item.id === event.target.value);
+                  if (selected?.meeting_url) {
+                    setMeetingUrl(selected.meeting_url);
+                  }
+                  if (selected?.title && !joinTitle) {
+                    setJoinTitle(selected.title);
+                  }
+                }}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white appearance-none focus:outline-none"
+              >
+                <option value="">Nessun evento collegato</option>
+                {calendarEvents.map(event => (
+                  <option key={event.id} value={event.id}>
+                    {event.title} · {event.time_label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mb-4">
+              <label className="text-xs text-gray-500 mb-1 block">Titolo riunione (opzionale)</label>
+              <input
+                type="text"
+                value={joinTitle}
+                onChange={event => setJoinTitle(event.target.value)}
+                placeholder="Titolo della chiamata"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/20"
+              />
+            </div>
+            <div className="mb-4">
               <label className="text-xs text-gray-500 mb-1 block">URL riunione</label>
               <input
                 type="url"
@@ -219,8 +545,21 @@ export default function Notetaker() {
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/20"
               />
             </div>
-            <button className="w-full bg-brand text-white py-3 rounded-xl font-semibold text-sm hover:bg-brand/90 transition-colors">
-              Inizia registrazione
+            <div className="mb-4">
+              <label className="text-xs text-gray-500 mb-1 block">Transcript o note (opzionale)</label>
+              <textarea
+                value={joinTranscript}
+                onChange={event => setJoinTranscript(event.target.value)}
+                placeholder="Se hai gia note o verbale, incollali qui per generare subito recap e action items."
+                className="min-h-28 w-full resize-y rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/20"
+              />
+            </div>
+            <button
+              onClick={createJoinSession}
+              disabled={submittingJoin || (!meetingUrl.trim() && !selectedEventId)}
+              className="w-full bg-brand text-white py-3 rounded-xl font-semibold text-sm hover:bg-brand/90 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submittingJoin ? 'Creazione in corso...' : 'Crea sessione video'}
             </button>
           </div>
         </div>
@@ -361,7 +700,7 @@ export default function Notetaker() {
             <div className="flex justify-between px-5 py-4 border-t border-gray-100 sticky bottom-0 bg-white">
               <button onClick={() => setSettingsPanel(false)} className="text-sm text-gray-500 hover:text-gray-700">Annulla</button>
               <button
-                onClick={() => setSettingsPanel(false)}
+                onClick={saveSettings}
                 className="bg-brand/10 text-brand text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-brand/20 transition-colors"
               >
                 Aggiorna preferenze

@@ -1,4 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { api } from '@/api/privateApiClient';
+import { useToast } from '@/components/ui/use-toast';
 
 const Toggle = ({ checked, onChange }) => (
   <button
@@ -39,6 +42,71 @@ export default function Categorizzazione() {
     marketingFilter: 'cold_unknown',
     topicStates: Object.fromEntries(topicLabels.map(l => [l.id, l.enabled])),
   });
+  const [threads, setThreads] = useState([]);
+  const [loadingThreads, setLoadingThreads] = useState(true);
+  const [processing, setProcessing] = useState(false);
+  const { toast } = useToast();
+
+  const topicLabelMap = Object.fromEntries(topicLabels.map(label => [label.id, label.label]));
+
+  const loadThreads = async () => {
+    setLoadingThreads(true);
+    try {
+      const payload = await api.get('/mail/threads');
+      setThreads(payload.threads || []);
+    } catch (error) {
+      console.error('Failed to load categorized threads', error);
+      setThreads([]);
+    } finally {
+      setLoadingThreads(false);
+    }
+  };
+
+  useEffect(() => {
+    const loadPage = async () => {
+      try {
+        const [payload] = await Promise.all([
+          api.get('/settings/categorization'),
+          loadThreads(),
+        ]);
+        if (payload.value) {
+          setSettings(payload.value);
+        }
+      } catch (error) {
+        console.error('Failed to load categorization settings', error);
+      }
+    };
+
+    loadPage();
+  }, []);
+
+  const saveSettings = async () => {
+    try {
+      await api.put('/settings/categorization', settings);
+      toast({ title: 'Preferenze aggiornate' });
+    } catch (error) {
+      console.error('Failed to save categorization settings', error);
+      toast({ title: 'Errore salvataggio', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const reprocessMailbox = async () => {
+    setProcessing(true);
+    try {
+      await api.put('/settings/categorization', settings);
+      const payload = await api.post('/mail/categorize', {});
+      await loadThreads();
+      toast({
+        title: 'Inbox rielaborata',
+        description: `${payload.updatedThreads} thread rivalutati con le regole correnti.`,
+      });
+    } catch (error) {
+      console.error('Failed to reprocess mailbox', error);
+      toast({ title: 'Errore rielaborazione', description: error.message, variant: 'destructive' });
+    } finally {
+      setProcessing(false);
+    }
+  };
 
   const toggle = (path, key) => {
     setSettings(prev => ({
@@ -47,13 +115,54 @@ export default function Categorizzazione() {
     }));
   };
 
+  const categoryLabels = {
+    todo: 'Da fare',
+    fyi: 'Per conoscenza',
+    notification: 'Notifica',
+    marketing: 'Marketing',
+    followUp: 'Da seguire',
+  };
+
+  const categoryCounts = threads.reduce((accumulator, thread) => {
+    const next = { ...accumulator };
+    const category = thread.category || 'fyi';
+    next[category] = (next[category] || 0) + 1;
+    return next;
+  }, { todo: 0, fyi: 0, notification: 0, marketing: 0, followUp: 0 });
+
+  const topicCounts = Object.entries(
+    threads.reduce((accumulator, thread) => {
+      if (!thread.topic_label) {
+        return accumulator;
+      }
+
+      return {
+        ...accumulator,
+        [thread.topic_label]: (accumulator[thread.topic_label] || 0) + 1,
+      };
+    }, {}),
+  ).sort((left, right) => right[1] - left[1]);
+
+  const categorizedThreads = threads.filter(thread => thread.categorized_at).length;
+  const recentThreads = threads.slice(0, 5);
+
   return (
     <div className="h-full overflow-auto">
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
         <h1 className="text-base font-semibold text-gray-900">Categorizzazione</h1>
-        <button className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium">
-          Aggiorna preferenze
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={reprocessMailbox}
+            disabled={processing}
+            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:border-gray-300 disabled:opacity-50"
+          >
+            {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Rielabora inbox
+          </button>
+          <button onClick={saveSettings} className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium">
+            Aggiorna preferenze
+          </button>
+        </div>
       </div>
 
       <div className="px-6 pt-5">
@@ -73,6 +182,92 @@ export default function Categorizzazione() {
 
         {tab === 'general' && (
           <div className="grid grid-cols-2 gap-6 max-w-4xl">
+            <div className="col-span-2 bg-white rounded-xl border border-gray-200 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 mb-1">Motore di categorizzazione privato</h3>
+                  <p className="text-xs text-gray-500">
+                    Le preferenze di questa pagina ora alimentano una rielaborazione server-side dei thread sincronizzati nel database locale.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    { label: 'Thread importati', value: threads.length },
+                    { label: 'Thread categorizzati', value: categorizedThreads },
+                    { label: 'Da fare', value: categoryCounts.todo },
+                    { label: 'Marketing', value: categoryCounts.marketing },
+                  ].map(item => (
+                    <div key={item.label} className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 min-w-[132px]">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-400">{item.label}</div>
+                      <div className="mt-1 text-2xl font-semibold text-gray-900">{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+                <div>
+                  <div className="text-xs font-medium text-gray-500 mb-2">Topic piu presenti</div>
+                  {loadingThreads ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Caricamento thread...
+                    </div>
+                  ) : topicCounts.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {topicCounts.slice(0, 6).map(([topic, count]) => (
+                        <span key={topic} className="rounded-full bg-brand/10 px-3 py-1 text-xs font-medium text-brand">
+                          {topicLabelMap[topic] || topic} · {count}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500">
+                      Nessun topic ancora rilevato. Sincronizza una casella o rielabora i thread esistenti.
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="text-xs font-medium text-gray-500 mb-2">Thread recenti</div>
+                  {loadingThreads ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Caricamento classificazioni...
+                    </div>
+                  ) : recentThreads.length > 0 ? (
+                    <div className="space-y-2.5">
+                      {recentThreads.map(thread => (
+                        <div key={thread.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="text-sm font-medium text-gray-900">{thread.subject}</div>
+                            <span className="rounded-full bg-white px-2 py-1 text-[11px] font-medium text-gray-600">
+                              {categoryLabels[thread.category] || thread.category}
+                            </span>
+                            {thread.topic_label ? (
+                              <span className="rounded-full bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">
+                                {topicLabelMap[thread.topic_label] || thread.topic_label}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            {thread.from_name} • {thread.inbox_action === 'move_out' ? 'Fuori inbox' : 'Visibile in inbox'}
+                          </div>
+                          <div className="mt-2 text-xs text-gray-600">
+                            {thread.category_reason || 'In attesa di rielaborazione.'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500">
+                      Nessun thread disponibile nel database locale.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Move out */}
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-4">Rimuovi dalla mia Inbox</h3>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { ChevronDown, Check, Trash2, Info, Loader2 } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+import { ChevronDown, Check, Trash2, Info, Loader2, RefreshCw } from 'lucide-react';
+import { api } from '@/api/privateApiClient';
 import { useToast } from '@/components/ui/use-toast';
 
 
@@ -14,23 +14,72 @@ const faqs = [
   'Esiste un programma di referral?',
 ];
 
+const operationalStatusMeta = {
+  active: { label: 'Operativo', className: 'bg-green-50 text-green-700 border-green-200' },
+  attention: { label: 'Attenzione', className: 'bg-amber-50 text-amber-700 border-amber-200' },
+  error: { label: 'Errore', className: 'bg-red-50 text-red-700 border-red-200' },
+  demo: { label: 'Demo locale', className: 'bg-slate-100 text-slate-700 border-slate-200' },
+};
+
+const syncStatusMeta = {
+  healthy: { label: 'Sync ok', className: 'bg-green-50 text-green-700 border-green-200' },
+  stale: { label: 'Sync fermo', className: 'bg-amber-50 text-amber-700 border-amber-200' },
+  idle: { label: 'Mai sincronizzato', className: 'bg-slate-100 text-slate-700 border-slate-200' },
+  failed: { label: 'Sync fallita', className: 'bg-red-50 text-red-700 border-red-200' },
+};
+
+const subscriptionStatusMeta = {
+  active: { label: 'Webhook attivo', className: 'bg-green-50 text-green-700 border-green-200' },
+  expiring: { label: 'Webhook in scadenza', className: 'bg-amber-50 text-amber-700 border-amber-200' },
+  expired: { label: 'Webhook scaduto', className: 'bg-red-50 text-red-700 border-red-200' },
+  pending: { label: 'Webhook in attesa', className: 'bg-slate-100 text-slate-700 border-slate-200' },
+  error: { label: 'Webhook in errore', className: 'bg-red-50 text-red-700 border-red-200' },
+  auth_error: { label: 'OAuth da rifare', className: 'bg-red-50 text-red-700 border-red-200' },
+  not_configured: { label: 'Webhook non configurato', className: 'bg-slate-100 text-slate-700 border-slate-200' },
+  demo: { label: 'Webhook demo', className: 'bg-slate-100 text-slate-700 border-slate-200' },
+};
+
+function formatDateTime(value) {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleString('it-IT', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  });
+}
+
+function StatusBadge({ meta }) {
+  if (!meta) {
+    return null;
+  }
+
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${meta.className}`}>
+      {meta.label}
+    </span>
+  );
+}
+
 export default function Integrazioni() {
   const [expandedFaq, setExpandedFaq] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(null);
+  const [syncingAccountId, setSyncingAccountId] = useState(null);
   const { toast } = useToast();
-  const [currentUser, setCurrentUser] = useState(null);
-
-  useEffect(() => {
-    base44.auth.me().then(u => setCurrentUser(u)).catch(() => {});
-  }, []);
 
   const loadAccounts = async () => {
     setLoading(true);
     try {
-      const res = await base44.functions.invoke('getConnectedAccounts', { user_id: currentUser?.id });
-      setAccounts(res.data.accounts || []);
+      const res = await api.get('/integrations/accounts');
+      setAccounts(res.accounts || []);
     } catch (e) {
       setAccounts([]);
     } finally {
@@ -38,16 +87,16 @@ export default function Integrazioni() {
     }
   };
 
-  useEffect(() => { if (currentUser) loadAccounts(); }, [currentUser]);
+  useEffect(() => {
+    loadAccounts();
+  }, []);
 
   const connectProvider = async (provider) => {
     setConnecting(provider);
-    const providerPath = provider === 'google' ? 'google' : 'microsoft';
-    const redirect_uri = `${window.location.origin}/oauth/${providerPath}`;
 
     try {
-      const res = await base44.functions.invoke('oauthStart', { provider, redirect_uri, user_id: currentUser?.id });
-      const authUrl = res.data.url;
+      const res = await api.post(`/integrations/oauth/${provider}/start`);
+      const authUrl = res.url;
 
       const popup = window.open(authUrl, 'oauth', 'width=500,height=700,left=200,top=100');
 
@@ -87,10 +136,30 @@ export default function Integrazioni() {
     }
   };
 
-  const disconnect = async (tokenId) => {
-    await base44.functions.invoke('disconnectAccount', { token_id: tokenId });
-    toast({ title: 'Account disconnesso' });
-    loadAccounts();
+  const disconnect = async (accountId) => {
+    try {
+      await api.delete(`/integrations/accounts/${accountId}`);
+      toast({ title: 'Account disconnesso' });
+      loadAccounts();
+    } catch (error) {
+      toast({ title: 'Errore disconnessione', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const syncAccount = async (accountId) => {
+    setSyncingAccountId(accountId);
+    try {
+      const res = await api.post('/mail/sync', { accountId });
+      toast({
+        title: 'Sincronizzazione completata',
+        description: `${res.processedThreads} thread, ${res.processedMessages} messaggi importati e ${res.categorizedThreads} thread categorizzati.`,
+      });
+      await loadAccounts();
+    } catch (error) {
+      toast({ title: 'Errore sincronizzazione', description: error.message, variant: 'destructive' });
+    } finally {
+      setSyncingAccountId(null);
+    }
   };
 
   const googleAccounts = accounts.filter(a => a.provider === 'google');
@@ -98,16 +167,49 @@ export default function Integrazioni() {
 
   const AccountItem = ({ account }) => (
     <div className="bg-gray-50 rounded-lg p-2.5 flex items-center justify-between mt-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-start gap-2">
         <Check className="w-4 h-4 text-green-500" />
-        <div>
+        <div className="space-y-1">
           <div className="text-xs font-medium text-gray-700">{account.email}</div>
-          <div className="text-xs text-gray-400">Connesso {new Date(account.connected_at).toLocaleDateString('it-IT')}</div>
+          <div className="flex flex-wrap gap-1">
+            <StatusBadge meta={operationalStatusMeta[account.operational_status]} />
+            <StatusBadge meta={syncStatusMeta[account.last_sync_status]} />
+            <StatusBadge meta={subscriptionStatusMeta[account.subscription_status]} />
+          </div>
+          <div className="text-xs text-gray-400">
+            Connesso {formatDateTime(account.connected_at) || 'adesso'}
+            {account.last_synced_at ? ` • Ultima sync ${formatDateTime(account.last_synced_at)}` : ' • Nessuna sync'}
+          </div>
+          <div className="text-xs text-gray-400">
+            {account.thread_count} thread • {account.draft_count} bozze
+          </div>
+          <div className="text-xs text-gray-400">
+            {account.last_webhook_at ? `Ultimo webhook ${formatDateTime(account.last_webhook_at)}` : 'Nessun webhook ricevuto'}
+            {account.subscription_expires_at ? ` • Scade ${formatDateTime(account.subscription_expires_at)}` : ''}
+          </div>
+          <div className="text-xs text-gray-400">
+            {account.provider === 'google'
+              ? (account.sync_cursor_available ? 'History cursor Gmail presente' : 'History cursor Gmail assente')
+              : (account.delta_link_available ? 'Delta link Microsoft presente' : 'Delta link Microsoft assente')}
+          </div>
+          {account.last_sync_error ? (
+            <div className="text-xs text-red-600">{account.last_sync_error}</div>
+          ) : null}
         </div>
       </div>
-      <button onClick={() => disconnect(account.id)} className="text-gray-400 hover:text-red-500">
-        <Trash2 className="w-4 h-4" />
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => syncAccount(account.id)}
+          disabled={syncingAccountId === account.id}
+          className="relative z-10 text-gray-400 hover:text-gray-700 disabled:opacity-50"
+          title="Sincronizza mailbox"
+        >
+          {syncingAccountId === account.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+        </button>
+        <button onClick={() => disconnect(account.id)} className="relative z-10 text-gray-400 hover:text-red-500">
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
     </div>
   );
 
@@ -121,7 +223,7 @@ export default function Integrazioni() {
             {connectedAccounts.length > 0 ? (
               <div className="flex items-center gap-1 text-xs text-green-600">
                 <div className="w-2 h-2 rounded-full bg-green-500" />
-                {connectedAccounts.length} account connesso
+                {connectedAccounts.length} account conness{connectedAccounts.length === 1 ? 'o' : 'i'}
               </div>
             ) : (
               <div className="text-xs text-gray-400">Non connesso</div>
@@ -131,7 +233,7 @@ export default function Integrazioni() {
         <button
           onClick={() => connectProvider(provider)}
           disabled={connecting === provider}
-          className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-brand border border-gray-200 px-3 py-1.5 rounded-lg hover:border-brand transition-colors disabled:opacity-50"
+          className="relative z-10 flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-brand border border-gray-200 px-3 py-1.5 rounded-lg hover:border-brand transition-colors disabled:opacity-50"
         >
           {connecting === provider ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
           {connectedAccounts.length > 0 ? 'Connetti altro' : 'Connetti'}
@@ -150,7 +252,17 @@ export default function Integrazioni() {
       <div className="bg-white rounded-xl border border-gray-100 p-5">
         <div className="flex items-center justify-between mb-1">
           <h3 className="text-sm font-semibold text-gray-700">Email</h3>
-          <Info className="w-4 h-4 text-gray-400" />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadAccounts}
+              disabled={loading}
+              className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Aggiorna stato
+            </button>
+            <Info className="w-4 h-4 text-gray-400" />
+          </div>
         </div>
         <p className="text-xs text-gray-500 mb-4">Connetti email per ottenere <span className="text-brand font-medium">risposte in bozza di alta qualità</span> nel tuo tono e una inbox categorizzata.</p>
         {loading ? (

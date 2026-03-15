@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Check, X, ArrowRight, Plus } from 'lucide-react';
 
 const steps = ['Connetti inbox', 'Connetti calendario', 'Setup inbox', 'Scegli piano', 'Invita team', 'La tua inbox è organizzata', 'Le tue risposte', 'Note riunioni'];

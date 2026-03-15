@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { X, Copy, ArrowRight, Check } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, Copy, ArrowRight, Check, RefreshCw } from 'lucide-react';
+import { api } from '@/api/privateApiClient';
 
 const Toggle = ({ checked, onChange }) => (
   <button onClick={() => onChange(!checked)} className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}>
@@ -9,20 +10,107 @@ const Toggle = ({ checked, onChange }) => (
 
 const hours = ['1AM','2AM','3AM','4AM','5AM','6AM','7AM','8AM','9AM','10AM','11AM','12PM','1PM','2PM','3PM','4PM','5PM','6PM','7PM','8PM','9PM','10PM','11PM'];
 const days = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
+const defaultSchedulingSettings = { includeLink: true, generateDrafts: true, confirmation: true };
+const defaultWeeklyHours = { 0: [9,10,11,12,14,15,16], 1: [9,10,11,12,14,15,16], 2: [9,10,11,12,14,15,16], 3: [9,10,11,12,14,15,16], 4: [9,10,11,12,14,15,16] };
+
+function schedulingStatsFromSummary(summary = {}) {
+  const averageAttendees = Number(summary.averageAttendees || 0);
+  const averageDuration = Number(summary.averageDurationMinutes || 0);
+
+  return [
+    { label: 'Riunioni prenotate', value: String(summary.bookedMeetings30d || 0) },
+    { label: 'Partecipanti medi', value: averageAttendees ? averageAttendees.toFixed(1) : '0.0' },
+    { label: 'Durata media', value: averageDuration ? `${averageDuration}m` : '0m' },
+  ];
+}
 
 export default function Pianificazione() {
   const [tab, setTab] = useState('links');
   const [showModal, setShowModal] = useState(null);
   const [link, setLink] = useState('mailmind.ai/e/utente');
-  const [settings, setSettings] = useState({ includeLink: true, generateDrafts: true, confirmation: true });
+  const [settings, setSettings] = useState(defaultSchedulingSettings);
+  const [stats, setStats] = useState(schedulingStatsFromSummary());
+  const [availableHours, setAvailableHours] = useState(defaultWeeklyHours);
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [calendarSummary, setCalendarSummary] = useState({});
+  const [syncingCalendar, setSyncingCalendar] = useState(false);
+  const [syncMessage, setSyncMessage] = useState('');
 
-  const availableHours = { 0: [9,10,11,12,14,15,16], 1: [9,10,11,12,14,15,16], 2: [9,10,11,12,14,15,16], 3: [9,10,11,12,14,15,16], 4: [9,10,11,12,14,15,16] };
+  useEffect(() => {
+    const loadScheduling = async () => {
+      try {
+        const [settingsPayload, calendarPayload] = await Promise.all([
+          api.get('/settings/scheduling'),
+          api.get('/calendar/events?limit=12'),
+        ]);
+
+        if (settingsPayload.value) {
+          const next = settingsPayload.value;
+          setLink(next.link || 'mailmind.ai/e/utente');
+          setSettings(next.settings || defaultSchedulingSettings);
+          setAvailableHours(next.availability?.weeklyHours || defaultWeeklyHours);
+        }
+
+        setCalendarEvents(calendarPayload.events || []);
+        setCalendarSummary(calendarPayload.summary || {});
+        setStats(schedulingStatsFromSummary(calendarPayload.summary || {}));
+      } catch (error) {
+        console.error('Failed to load scheduling settings', error);
+      }
+    };
+
+    loadScheduling();
+  }, []);
+
+  const saveSettings = async () => {
+    try {
+      await api.put('/settings/scheduling', {
+        link,
+        settings,
+        availability: {
+          timezone: "Ora dell'Europa Centrale",
+          weeklyHours: availableHours,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to save scheduling settings', error);
+    }
+  };
+
+  const syncCalendar = async () => {
+    setSyncingCalendar(true);
+    setSyncMessage('');
+    try {
+      const result = await api.post('/calendar/sync', {});
+      const calendarPayload = await api.get('/calendar/events?limit=12');
+      setCalendarEvents(calendarPayload.events || []);
+      setCalendarSummary(calendarPayload.summary || {});
+      setStats(schedulingStatsFromSummary(calendarPayload.summary || {}));
+      setSyncMessage(`${result.importedEvents || 0} eventi aggiornati`);
+    } catch (error) {
+      console.error('Failed to sync calendar', error);
+      setSyncMessage(error.message || 'Sync calendario fallita');
+    } finally {
+      setSyncingCalendar(false);
+    }
+  };
 
   return (
     <div className="h-full overflow-auto bg-gray-50">
       <div className="flex items-center justify-between px-8 py-4 bg-white border-b border-gray-100">
         <h1 className="text-lg font-bold text-gray-900">Pianificazione</h1>
-        <button className="text-sm text-brand font-medium hover:underline">Aggiorna preferenze</button>
+        <div className="flex items-center gap-3">
+          {syncMessage && <span className="text-xs text-gray-500">{syncMessage}</span>}
+          <button
+            onClick={syncCalendar}
+            disabled={syncingCalendar}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${syncingCalendar ? 'animate-spin' : ''}`} />
+            Sync calendario
+          </button>
+          <button onClick={saveSettings} className="text-sm text-brand font-medium hover:underline">Aggiorna preferenze</button>
+        </div>
       </div>
 
       <div className="px-8 py-6 max-w-4xl">
@@ -38,12 +126,43 @@ export default function Pianificazione() {
           <div>
             <div className="bg-[#f5f0e8] rounded-xl px-4 py-2 text-xs text-gray-500 mb-4">Ultimi 30 giorni</div>
             <div className="grid grid-cols-3 gap-4 mb-6">
-              {[{ label: 'Riunioni prenotate', value: '0' }, { label: 'Partecipanti medi', value: '0.0' }, { label: 'Durata media', value: '0m' }].map(s => (
+              {stats.map(s => (
                 <div key={s.label} className="bg-white rounded-xl border border-gray-100 p-4">
                   <div className="text-sm text-gray-500 mb-1">{s.label}</div>
                   <div className="text-2xl font-bold text-gray-900">{s.value}</div>
                 </div>
               ))}
+            </div>
+
+            <div className="bg-white rounded-xl border border-gray-100 p-5 mb-4">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div>
+                  <h3 className="font-semibold text-gray-900 mb-1">Prossime riunioni dal calendario collegato</h3>
+                  <p className="text-sm text-gray-500">Google Calendar e Outlook vengono letti dal backend privato e usati anche per Dashboard e Notetaker.</p>
+                </div>
+                <div className="text-right text-xs text-gray-500">
+                  <div>Oggi: {calendarSummary.todayCount || 0}</div>
+                  <div>Domani: {calendarSummary.tomorrowCount || 0}</div>
+                </div>
+              </div>
+              <div className="space-y-3">
+                {calendarEvents.length ? calendarEvents.slice(0, 5).map(event => (
+                  <div key={event.id} className="flex items-center justify-between rounded-xl border border-gray-100 px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900">{event.title}</div>
+                      <div className="text-xs text-gray-500">{event.time_label} · {event.account_email || 'account collegato'}</div>
+                    </div>
+                    <div className="text-right text-xs text-brand">
+                      <div>{event.join_provider ? event.join_provider.replaceAll('_', ' ') : 'calendar'}</div>
+                      <div className="text-gray-400">{event.location || (event.meeting_url ? 'link riunione disponibile' : 'nessun link')}</div>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-5 text-sm text-gray-400">
+                    Nessuna riunione trovata nella finestra attuale. Lancia una sync calendario o collega un account con eventi futuri.
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="bg-white rounded-xl border border-gray-100 p-5 mb-4">
@@ -54,7 +173,7 @@ export default function Pianificazione() {
                 </div>
                 <div className="flex-shrink-0 w-72">
                   <div className="flex items-center gap-1 border border-gray-200 rounded-lg overflow-hidden mb-2">
-                    <input readOnly value="https://mailmind.ai/e/utente/30" className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
+                    <input readOnly value={`https://${link}/30`} className="flex-1 px-2 py-2 text-xs text-gray-600 outline-none truncate" />
                     <button className="flex items-center gap-1 bg-brand text-white px-2 py-2 text-xs font-medium whitespace-nowrap">
                       <Copy className="w-3 h-3" /> Copia link
                     </button>

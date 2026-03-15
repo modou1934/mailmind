@@ -1,39 +1,65 @@
-**Welcome to your Base44 project** 
+# MailMind Private
 
-**About**
+MailMind ora gira su stack privato locale.
 
-View and Edit  your app on [Base44.com](http://Base44.com) 
+## Stack attuale
 
-This project contains everything you need to run your app locally.
+- frontend React + Vite
+- backend privato locale in `server/`
+- database SQLite locale in `server/data/`
+- storage locale per upload in `server/data/objects/`
+- sessioni cookie-based
+- integrazioni OAuth Google/Microsoft gestite dal backend privato
 
-**Edit the code in your local development environment**
+## Avvio locale
 
-Any change pushed to the repo will also be reflected in the Base44 Builder.
+1. Compila `./.env`
+2. Avvia il backend:
 
-**Prerequisites:** 
-
-1. Clone the repository using the project's Git URL 
-2. Navigate to the project directory
-3. Install dependencies: `npm install`
-4. Create an `.env.local` file and set the right environment variables
-
-```
-VITE_BASE44_APP_ID=your_app_id
-VITE_BASE44_APP_BASE_URL=your_backend_url
-
-e.g.
-VITE_BASE44_APP_ID=cbef744a8545c389ef439ea6
-VITE_BASE44_APP_BASE_URL=https://my-to-do-list-81bfaad7.base44.app
+```bash
+npm run dev:server
 ```
 
-Run the app: `npm run dev`
+3. Avvia il frontend in un secondo terminale:
 
-**Publish your changes**
+```bash
+npm run dev
+```
 
-Open [Base44.com](http://Base44.com) and click on Publish.
+Il frontend usa il proxy Vite verso `/api`, quindi in sviluppo si appoggia al server privato in `http://localhost:8787`.
 
-**Docs & Support**
+## Infra locale per il passo successivo
 
-Documentation: [https://docs.base44.com/Integrations/Using-GitHub](https://docs.base44.com/Integrations/Using-GitHub)
+Per avviare `Postgres` e `MinIO` in locale:
 
-Support: [https://app.base44.com/support](https://app.base44.com/support)
+```bash
+npm run infra:up
+```
+
+Per bootstrap dello schema e migrazione dei dati correnti da SQLite a Postgres:
+
+```bash
+npm run db:bootstrap:postgres
+npm run db:verify:postgres
+```
+
+L'entrypoint SQL usato dal bootstrap e in `postgres/001_init.sql`.
+
+## File principali
+
+- `server/index.js`: API privata locale
+- `server/db.js`: schema SQLite e seed iniziale
+- `server/storage.js`: storage locale per upload e artefatti
+- `server/oauth.js`: start/callback OAuth
+- `server/transcription.js`: speech-to-text Deepgram
+- `scripts/migrate-to-postgres.mjs`: copia dati da SQLite a Postgres
+- `src/api/privateApiClient.js`: client frontend verso API private
+- `PLAN.md`: piano backend completo
+
+## Credenziali
+
+Le variabili ambiente stanno in:
+
+- `./.env`
+
+Le chiavi sensibili non sono nel repo. Se mancano le credenziali OAuth, le integrazioni restano disabilitate ma il progetto continua a partire in modalita privata locale.

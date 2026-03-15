@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { base44 } from '@/api/base44Client';
+import { api } from '@/api/privateApiClient';
 
 export default function OAuthCallback() {
   const [status, setStatus] = useState('processing');
@@ -8,7 +8,7 @@ export default function OAuthCallback() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
-    const state = params.get('state'); // userId
+    const state = params.get('state');
     const error = params.get('error');
 
     if (error) {
@@ -27,13 +27,12 @@ export default function OAuthCallback() {
     // Detect provider from URL path
     const path = window.location.pathname;
     const provider = path.includes('microsoft') ? 'microsoft' : 'google';
-    const redirect_uri = `${window.location.origin}${window.location.pathname}`;
 
-    base44.functions.invoke('oauthCallback', { code, provider, redirect_uri, state })
+    api.post(`/integrations/oauth/${provider}/callback`, { code, state })
       .then(res => {
         setStatus('success');
-        setMessage(`Account ${res.data.email} connesso con successo!`);
-        window.opener?.postMessage({ type: 'oauth_success', provider, email: res.data.email }, '*');
+        setMessage(`Account ${res.email} connesso con successo!`);
+        window.opener?.postMessage({ type: 'oauth_success', provider, email: res.email }, '*');
         setTimeout(() => window.close(), 2000);
       })
       .catch(err => {

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, Check, Star, Shield, Zap, ArrowRight, Play } from 'lucide-react';
+import { ChevronDown, Check, Star, Play } from 'lucide-react';
 
 const EmailMockup = ({ type }) => {
   if (type === 'triage') return (

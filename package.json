@@ -1,19 +1,23 @@
 {
-  "name": "base44-app",
+  "name": "mailmind-private",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "node --watch --env-file=.env server/index.js",
+    "server": "node --env-file=.env server/index.js",
     "build": "vite build",
     "lint": "eslint . --quiet",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p ./jsconfig.json",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "infra:up": "docker compose up -d postgres minio",
+    "infra:down": "docker compose down",
+    "db:bootstrap:postgres": "node --env-file=.env scripts/migrate-to-postgres.mjs",
+    "db:verify:postgres": "node --env-file=.env scripts/verify-postgres.mjs"
   },
   "dependencies": {
-    "@base44/sdk": "^0.8.0",
-    "@base44/vite-plugin": "^1.0.0",
     "@hello-pangea/dnd": "^17.0.0",
     "@hookform/resolvers": "^4.1.2",
     "@radix-ui/react-accordion": "^1.2.3",
@@ -60,6 +64,7 @@
     "lucide-react": "^0.475.0",
     "moment": "^2.30.1",
     "next-themes": "^0.4.4",
+    "pg": "^8.20.0",
     "react": "^18.2.0",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.2.0",

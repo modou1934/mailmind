@@ -1,6 +1,10 @@
 #env
 .env
 .env.*
+server/data/*.db
+server/data/*.sqlite
+server/data/*.sqlite3
+server/data/objects/
 
 # Logs
 /logs
