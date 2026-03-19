@@ -135,7 +135,7 @@ export function buildProviderAuthUrl(provider, { state, redirectUri }) {
     params.set("scope", config.defaultScopes.join(" "));
   }
 
-  if (provider === "google") {
+  if (provider === "google" || provider === "google-calendar") {
     params.set("access_type", "offline");
     params.set("prompt", "consent");
   }

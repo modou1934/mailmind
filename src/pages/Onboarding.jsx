@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Check, X, ArrowRight, Plus, Loader2 } from 'lucide-react';
 import { api } from '@/api/privateApiClient';
 
-const steps = ['Connetti inbox', 'Connetti calendario', 'Setup inbox', 'Scegli piano', 'Invita team', 'La tua inbox è organizzata', 'Le tue risposte', 'Note riunioni'];
+const steps = ['Connetti account', 'Setup inbox', 'Scegli piano', 'Invita team', 'La tua inbox è organizzata', 'Le tue risposte', 'Note riunioni'];
 
 export default function Onboarding() {
   const [step, setStep] = useState(0);
@@ -55,8 +55,18 @@ export default function Onboarding() {
           clearInterval(poll);
           setConnecting('');
           loadAccounts();
+          const successProvider = event.data?.provider;
           if (nextStep) {
-            setStep((current) => Math.min(current + 1, steps.length - 1));
+            const currentIndex = steps.findIndex(Boolean);
+            setStep((current) => {
+              if ((provider === 'google' || provider === 'microsoft') && (successProvider === provider)) {
+                return 1;
+              }
+              if ((provider === 'google-calendar' || provider === 'microsoft-calendar') && (successProvider === provider)) {
+                return 2;
+              }
+              return Math.min(current + 1, steps.length - 1);
+            });
           }
         }
         if (event.data?.type === 'oauth_error') {
@@ -98,7 +108,7 @@ export default function Onboarding() {
       <div className="flex h-[calc(100vh-57px)]">
         {/* Steps sidebar */}
         <div className="w-32 flex flex-col items-start px-6 py-8 gap-0 relative">
-          {steps.slice(0, 6).map((s, i) => (
+          {steps.slice(0, 5).map((s, i) => (
             <div key={i} className="flex flex-col items-start">
               <div className="flex items-center gap-2 mb-0">
                 <div className={`w-3 h-3 rounded-full border-2 transition-all flex-shrink-0 ${i < step ? 'bg-brand border-brand' : i === step ? 'bg-brand border-brand' : 'bg-white border-gray-300'}`} />
@@ -108,7 +118,7 @@ export default function Onboarding() {
           ))}
           {/* Step labels */}
           <div className="absolute left-12 top-8 space-y-0">
-            {steps.slice(0, 6).map((s, i) => (
+            {steps.slice(0, 5).map((s, i) => (
               <div key={i} className={`text-xs py-[14px] font-medium transition-colors ${i === step ? 'text-gray-900' : i < step ? 'text-brand' : 'text-gray-300'}`}>
                 {s}
               </div>
@@ -120,9 +130,9 @@ export default function Onboarding() {
         <div className="flex-1 flex items-center justify-center p-8">
           {step === 0 && (
             <div className="max-w-md w-full">
-              <div className="bg-[#f5f0e8] rounded-xl px-4 py-2 text-sm text-gray-600 mb-6 text-center">La tua inbox rimane sicura.</div>
-              <h2 className="text-3xl font-black text-gray-900 mb-2">Collegare la tua inbox di lavoro.</h2>
-              <p className="text-gray-500 mb-6">MailMind AI organizza le email e bozza risposte senza mai inviare o eliminare nulla.</p>
+              <div className="bg-[#f5f0e8] rounded-xl px-4 py-2 text-sm text-gray-600 mb-6 text-center">Inbox e calendario si collegano insieme.</div>
+              <h2 className="text-3xl font-black text-gray-900 mb-2">Collega email e calendario di lavoro.</h2>
+              <p className="text-gray-500 mb-6">MailMind AI organizza le email, suggerisce disponibilita e prepara note riunione con una sola connessione per provider.</p>
               <div className="flex justify-center gap-8 mb-6">
                 <div className="text-5xl">✉️</div>
                 <div className="text-5xl">📧</div>
@@ -135,7 +145,7 @@ export default function Onboarding() {
                 <img src="/assets/outlook.png" alt="Outlook" className="w-5 h-5 object-contain" /> Connetti con Outlook
                 {connecting === 'microsoft' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
               </button>
-              {inboxConnected ? <p className="text-center text-xs text-green-600 mt-3">Inbox collegata correttamente. Puoi continuare o aggiungere altri account dopo.</p> : null}
+              {(inboxConnected || calendarConnected) ? <p className="text-center text-xs text-green-600 mt-3">Provider collegato: inbox e calendario sono pronti per onboarding, scheduling e notetaker.</p> : null}
               <p className="text-center text-xs text-gray-400 mt-4">MailMind non invia email per tuo conto · Puoi disconnetterti in qualsiasi momento</p>
               <div className="flex justify-center gap-3 mt-4">
                 {['🛡️', '🔒', '✅', '🇪🇺'].map((icon, i) => (
@@ -146,27 +156,6 @@ export default function Onboarding() {
           )}
 
           {step === 1 && (
-            <div className="max-w-md w-full">
-              <div className="bg-[#f5f0e8] rounded-xl px-4 py-2 text-sm text-gray-600 mb-6 text-center">Sei dentro,</div>
-              <h2 className="text-3xl font-black text-gray-900 mb-2">La tua email è connessa. Il prossimo passo è il calendario.</h2>
-              <p className="text-gray-500 mb-6">MailMind AI si sincronizza con il tuo calendario per suggerire la tua disponibilità nelle email che scrive.</p>
-              <div className="flex justify-center gap-8 mb-6">
-                <div className="text-5xl">📅</div>
-                <div className="text-5xl">📧</div>
-              </div>
-              <button onClick={() => connectProvider('google-calendar', { nextStep: true })} disabled={connecting === 'google-calendar'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
-                <img src="/assets/google-calendar.png" alt="Google Calendar" className="w-5 h-5 object-contain" /> Collega il tuo calendario Google
-                {connecting === 'google-calendar' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
-              </button>
-              <button onClick={() => connectProvider('microsoft-calendar', { nextStep: true })} disabled={connecting === 'microsoft-calendar'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
-                <img src="/assets/outlook.png" alt="Outlook Calendar" className="w-5 h-5 object-contain" /> Connetti Outlook Calendar
-                {connecting === 'microsoft-calendar' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
-              </button>
-              {calendarConnected ? <p className="text-center text-xs text-green-600 mt-3">Calendario collegato: disponibilita, eventi e notetaker saranno sincronizzati.</p> : null}
-            </div>
-          )}
-
-          {step === 2 && (
             <div className="max-w-lg w-full">
               <h2 className="text-2xl font-black text-gray-900 mb-2">Mantieni ciò che è importante nella tua inbox</h2>
               <p className="text-gray-500 mb-5">MailMind AI etichetta le tue email, mantiene le più importanti nella tua inbox e archivia il resto in cartelle MailMind.</p>
@@ -198,7 +187,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          {step === 3 && (
+          {step === 2 && (
             <div className="max-w-lg w-full">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">QUASI CI SIAMO!</p>
               <h2 className="text-3xl font-black text-gray-900 mb-6">Quale piano fa per te?</h2>
@@ -238,7 +227,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          {step === 4 && (
+          {step === 3 && (
             <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 p-6">
               <div className="bg-[#f5f0e8] rounded-xl p-4 mb-5">
                 <input type="email" className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="collega.cognome@outlook.com" />
@@ -261,7 +250,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          {step === 5 && (
+          {step === 4 && (
             <div className="max-w-lg w-full">
               <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-5">
                 <div className="flex items-center gap-1.5 px-4 py-2 bg-gray-50">
@@ -301,7 +290,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          {step === 6 && (
+          {step === 5 && (
             <div className="max-w-md w-full">
               <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-5">
                 <div className="flex items-center gap-1.5 px-4 py-2 bg-gray-50">
@@ -322,7 +311,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          {step === 7 && (
+          {step === 6 && (
             <div className="max-w-md w-full">
               <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden mb-5">
                 <div className="bg-gray-800 aspect-video rounded-t-2xl flex items-center justify-center relative overflow-hidden">
