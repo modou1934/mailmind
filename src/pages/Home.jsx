@@ -119,20 +119,22 @@ const testimonials = [
 
 const pricingPlans = [
   {
-    name: 'Solo',
-    desc: 'Per freelance e consulenti',
-    price: '€19',
-    priceMonthly: '€24',
-    features: ['200 bozze/mese', 'Triage semantico inbox', 'Registro formale italiano', 'Supporto email'],
+    name: 'Starter',
+    desc: 'Per professionisti individuali che vogliono inbox, calendario e notetaker in un unico posto.',
+    monthlyPrice: '€20',
+    annualPrice: '€16',
+    annualBilledAs: '€192/anno',
+    features: ['Organization per 1 inbox e 1 calendar', 'Drafts replies nel tuo stile', 'Notetaker per riunioni e note automatiche'],
     cta: 'Inizia gratis',
     popular: false,
   },
   {
-    name: 'Pro',
-    desc: 'Per manager e imprenditori',
-    price: '€39',
-    priceMonthly: '€49',
-    features: ['Bozze illimitate', 'Integrazione PEC nativa', 'Template PA italiani', '5 ore notetaker/mese', 'Gmail + Outlook', 'Chat storico email', 'Email + chat support'],
+    name: 'Professional',
+    desc: 'Per chi vuole piu automazione, piu integrazioni e piu personalizzazione.',
+    monthlyPrice: '€40',
+    annualPrice: '€32',
+    annualBilledAs: '€384/anno',
+    features: ['Tutto in Starter, piu inbox e calendari multipli', 'Fx-style drafts nel tuo voice', 'Scheduling cross-team e time zones', 'Chat su inbox e meeting notes', 'HubSpot e file training in roadmap immediata'],
     cta: 'Inizia gratis',
     popular: true,
   },
@@ -148,8 +150,8 @@ const pricingPlans = [
 ];
 
 export default function Home() {
-  const [annual, setAnnual] = useState(true);
   const [activeFeature, setActiveFeature] = useState(0);
+  const [annual, setAnnual] = useState(true);
 
   useEffect(() => {
     const timer = setInterval(() => setActiveFeature(p => (p + 1) % features.length), 4000);
@@ -173,10 +175,10 @@ export default function Home() {
             <button className="text-sm border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">Parla con noi</button>
             <span className="text-sm text-gray-400">Inizia gratis:</span>
             <Link to="/onboarding" className="flex items-center gap-1.5 bg-gray-900 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-gray-800 transition-colors">
-              <span className="text-base">✉️</span> Gmail
+              <img src="/assets/gmail.png" alt="Gmail" className="w-4 h-4 object-contain" /> Gmail
             </Link>
             <Link to="/onboarding" className="flex items-center gap-1.5 border border-gray-200 text-sm px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors">
-              <span className="text-base">📧</span> Outlook
+              <img src="/assets/outlook.png" alt="Outlook" className="w-4 h-4 object-contain" /> Outlook
             </Link>
           </div>
         </div>
@@ -197,13 +199,13 @@ export default function Home() {
           </h1>
           <div className="flex items-center justify-center gap-3 mb-3">
             <Link to="/onboarding" className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-semibold hover:bg-gray-800 transition-all shadow-lg">
-              ✉️ Inizia con Gmail
+              <img src="/assets/gmail.png" alt="Gmail" className="w-5 h-5 object-contain" /> Inizia con Gmail
             </Link>
             <Link to="/onboarding" className="flex items-center gap-2 border-2 border-gray-200 bg-white text-gray-900 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50 transition-all">
-              📧 Inizia con Outlook
+              <img src="/assets/outlook.png" alt="Outlook" className="w-5 h-5 object-contain" /> Inizia con Outlook
             </Link>
           </div>
-          <p className="text-sm text-gray-500 mb-8">14 giorni gratis · Cancella in qualsiasi momento</p>
+          <p className="text-sm text-gray-500 mb-8">7 giorni gratis · Cancella in qualsiasi momento</p>
           <button className="flex items-center gap-2 mx-auto border border-gray-200 bg-white text-gray-700 px-5 py-2 rounded-full text-sm hover:bg-gray-50 transition-colors shadow-sm">
             <span className="w-2 h-2 bg-green-400 rounded-full"></span>
             Parla con noi
@@ -332,13 +334,13 @@ export default function Home() {
           </div>
           <div className="flex items-center justify-center gap-3">
             <Link to="/onboarding" className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-semibold hover:bg-gray-800">
-              ✉️ Inizia con Gmail
+              <img src="/assets/gmail.png" alt="Gmail" className="w-5 h-5 object-contain" /> Inizia con Gmail
             </Link>
             <Link to="/onboarding" className="flex items-center gap-2 border-2 border-gray-200 bg-white text-gray-900 px-6 py-3 rounded-xl font-semibold hover:bg-gray-50">
-              📧 Inizia con Outlook
+              <img src="/assets/outlook.png" alt="Outlook" className="w-5 h-5 object-contain" /> Inizia con Outlook
             </Link>
           </div>
-          <p className="text-center text-xs text-gray-400 mt-3">14 giorni gratis · Cancella in qualsiasi momento</p>
+          <p className="text-center text-xs text-gray-400 mt-3">7 giorni gratis · Cancella in qualsiasi momento</p>
         </div>
       </section>
 
@@ -346,9 +348,9 @@ export default function Home() {
       <section id="pricing" className="py-20 bg-[#f5f0e8]">
         <div className="max-w-5xl mx-auto px-6">
           <h2 className="text-4xl font-black text-center text-gray-900 mb-2">Scegli quanto velocemente vuoi lavorare</h2>
-          <p className="text-center text-gray-500 mb-6">Inizia con 14 giorni gratis</p>
+          <p className="text-center text-gray-500 mb-6">Inizia con 7 giorni gratis</p>
           <div className="flex items-center justify-center gap-2 mb-10">
-            <span className="text-sm text-gray-500">Risparmia il 20% con l'annuale</span>
+            <span className="text-sm text-gray-500">Risparmia il {20}% con l'annuale</span>
             <div className="flex bg-gray-200 rounded-full p-0.5">
               <button onClick={() => setAnnual(true)} className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${annual ? 'bg-gray-900 text-white' : 'text-gray-600'}`}>Annuale (-20%)</button>
               <button onClick={() => setAnnual(false)} className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${!annual ? 'bg-gray-900 text-white' : 'text-gray-600'}`}>Mensile</button>
@@ -364,11 +366,11 @@ export default function Home() {
                   <div className="text-3xl font-black text-gray-900 mb-1">{plan.price}</div>
                 ) : (
                   <div className="mb-1">
-                    <span className="text-4xl font-black text-gray-900">{annual ? plan.price : plan.priceMonthly}</span>
+                    <span className="text-4xl font-black text-gray-900">{annual ? plan.annualPrice : plan.monthlyPrice}</span>
                     <span className="text-sm text-gray-500">/utente/mese</span>
                   </div>
                 )}
-                {!plan.enterprise && <p className="text-xs text-gray-400 mb-5">fatturato {annual ? 'annualmente' : 'mensilmente'}</p>}
+                {!plan.enterprise && <p className="text-xs text-gray-400 mb-5">{annual ? `fatturato annualmente (${plan.annualBilledAs})` : 'fatturato mensilmente'} • 7 giorni gratis</p>}
                 <Link to="/onboarding" className={`block text-center py-3 rounded-xl font-semibold text-sm mb-5 transition-all ${plan.popular ? 'bg-brand text-white hover:bg-brand/90' : plan.enterprise ? 'border-2 border-gray-200 text-gray-700 hover:bg-gray-50' : 'bg-gray-900 text-white hover:bg-gray-800'}`}>
                   {plan.cta}
                 </Link>
@@ -451,7 +453,7 @@ export default function Home() {
                 📧 Inizia con Outlook
               </Link>
             </div>
-            <p className="text-xs text-gray-400">14 giorni gratis · Cancella in qualsiasi momento</p>
+            <p className="text-xs text-gray-400">7 giorni gratis · Cancella in qualsiasi momento</p>
             <button className="mt-3 flex items-center gap-2 mx-auto border border-gray-200 bg-white text-gray-700 px-4 py-2 rounded-full text-sm hover:bg-gray-50">
               Parla con noi
             </button>

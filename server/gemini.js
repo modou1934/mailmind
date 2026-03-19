@@ -1,3 +1,5 @@
+import { fetchWithTimeout, readJsonResponse } from "./fetch.js"
+
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite";
 const FALLBACK_GEMINI_MODELS = [
   "gemini-2.5-flash-lite",
@@ -154,7 +156,7 @@ async function requestGemini({
     throw new Error("Missing Gemini API key");
   }
 
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     {
       method: "POST",
@@ -182,7 +184,7 @@ async function requestGemini({
     },
   );
 
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     const error = new Error(payload?.error?.message || "Gemini request failed");
     error.status = response.status;

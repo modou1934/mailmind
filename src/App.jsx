@@ -11,6 +11,7 @@ import Home from './pages/Home';
 import Onboarding from './pages/Onboarding';
 import AppLayout from './components/AppLayout';
 import Dashboard from './pages/Dashboard';
+import AwaitingReply from './pages/AwaitingReply';
 import Categorizzazione from './pages/Categorizzazione';
 import Bozze from './pages/Bozze';
 import Notetaker from './pages/Notetaker';
@@ -52,6 +53,7 @@ const AuthenticatedApp = () => {
       {/* App routes with layout */}
       <Route element={<AppLayout />}>
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/awaiting-reply" element={<AwaitingReply />} />
         <Route path="/categorizzazione" element={<Categorizzazione />} />
         <Route path="/bozze" element={<Bozze />} />
         <Route path="/notetaker" element={<Notetaker />} />
@@ -66,7 +68,10 @@ const AuthenticatedApp = () => {
       </Route>
 
       <Route path="/oauth/google" element={<OAuthCallback />} />
+      <Route path="/oauth/google-calendar" element={<OAuthCallback />} />
       <Route path="/oauth/microsoft" element={<OAuthCallback />} />
+      <Route path="/oauth/microsoft-calendar" element={<OAuthCallback />} />
+      <Route path="/oauth/zoom" element={<OAuthCallback />} />
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decryptString, encryptString } from "./crypto.js";
+import { fetchWithTimeout } from "./fetch.js";
 import { refreshOAuthAccessToken } from "./oauth.js";
 
 const THREAD_LIMIT = Number(process.env.MAIL_SYNC_THREAD_LIMIT || 15);
@@ -69,7 +70,7 @@ async function readJsonResponse(response) {
 }
 
 async function providerRequest(url, accessToken, { method = "GET", headers = {}, body } = {}) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -190,6 +191,21 @@ function parseEmailAddress(rawValue = "") {
   };
 }
 
+function normalizeCalendarAttendees(attendees = []) {
+  return (Array.isArray(attendees) ? attendees : [])
+    .map((item) => {
+      const emailAddress = item?.emailAddress || item
+      return {
+        name: String(item?.displayName || emailAddress?.name || "").trim(),
+        email: String(item?.email || emailAddress?.address || "").trim().toLowerCase(),
+        responseStatus: String(item?.responseStatus || item?.status?.response || "").trim(),
+        organizer: Boolean(item?.organizer),
+        self: Boolean(item?.self),
+      }
+    })
+    .filter((item) => item.email)
+}
+
 function normalizeGoogleCalendarEvent(event) {
   const videoEntry = event.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video");
   const meetingUrl = event.hangoutLink
@@ -215,6 +231,7 @@ function normalizeGoogleCalendarEvent(event) {
     endAt,
     timezone: event.start?.timeZone || event.end?.timeZone || "",
     attendeeCount: Array.isArray(event.attendees) ? event.attendees.length : 0,
+    attendees: normalizeCalendarAttendees(event.attendees),
     isAllDay: isAllDay ? 1 : 0,
     location: normalizeWhitespace(event.location || ""),
   };
@@ -566,6 +583,7 @@ function normalizeMicrosoftCalendarEvent(event) {
     endAt: calendarDateTimeToIso(event.end?.dateTime || ""),
     timezone: event.start?.timeZone || event.end?.timeZone || "",
     attendeeCount: Array.isArray(event.attendees) ? event.attendees.length : 0,
+    attendees: normalizeCalendarAttendees(event.attendees),
     isAllDay: event.isAllDay ? 1 : 0,
     location: normalizeWhitespace(
       event.location?.displayName
@@ -809,13 +827,25 @@ function isSubscriptionExpiring(expiresAt, renewWindowMs) {
   return date.getTime() <= Date.now() + renewWindowMs;
 }
 
+function shouldRefreshSubscription(existingSubscription, renewWindowMs) {
+  if (!existingSubscription) {
+    return true;
+  }
+
+  if (existingSubscription.status === "error" || existingSubscription.status === "auth_error" || existingSubscription.status === "expired") {
+    return true;
+  }
+
+  return isSubscriptionExpiring(existingSubscription.expiration_at, renewWindowMs);
+}
+
 async function ensureGoogleWatch(accessToken, account, existingSubscription) {
   const topicName = process.env.GOOGLE_PUBSUB_TOPIC;
   if (!topicName) {
     return null;
   }
 
-  if (existingSubscription?.provider === "google" && !isSubscriptionExpiring(existingSubscription.expiration_at, GOOGLE_WATCH_RENEW_WINDOW_MS)) {
+  if (existingSubscription?.provider === "google" && !shouldRefreshSubscription(existingSubscription, GOOGLE_WATCH_RENEW_WINDOW_MS)) {
     return null;
   }
 
@@ -851,7 +881,7 @@ async function createOrRenewMicrosoftSubscription(accessToken, existingSubscript
   const expirationAt = new Date(Date.now() + 1000 * 60 * 50).toISOString();
   const clientState = existingSubscription?.client_state || randomUUID();
 
-  if (existingSubscription?.external_subscription_id && !isSubscriptionExpiring(existingSubscription.expiration_at, MICROSOFT_SUBSCRIPTION_RENEW_WINDOW_MS)) {
+  if (existingSubscription?.external_subscription_id && !shouldRefreshSubscription(existingSubscription, MICROSOFT_SUBSCRIPTION_RENEW_WINDOW_MS)) {
     return null;
   }
 

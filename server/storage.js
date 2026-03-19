@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -71,4 +71,19 @@ export async function putStoredObject({
     size: buffer.length,
     contentType,
   };
+}
+
+export async function deleteStoredObject(objectKey = "") {
+  const provider = storageProvider();
+  if (provider !== "local" || !objectKey) {
+    return false;
+  }
+
+  const absolutePath = join(localStorageRoot(), String(objectKey).replace(/^\/+/, ""));
+  try {
+    unlinkSync(absolutePath);
+    return true;
+  } catch {
+    return false;
+  }
 }

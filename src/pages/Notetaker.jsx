@@ -1,6 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, ChevronDown } from 'lucide-react';
+import { X, ChevronDown, Loader2, Send, MessageSquareText } from 'lucide-react';
 import { api } from '@/api/privateApiClient';
+
+const recapTemplates = [
+  { id: 'standard', label: 'Standard' },
+  { id: 'concise', label: 'Sintetico' },
+  { id: 'action', label: 'Operativo' },
+];
+
+const providerLabels = {
+  google_meet: 'Google Meet',
+  microsoft_teams: 'Microsoft Teams',
+  zoom: 'Zoom',
+  webex: 'Webex',
+  external: 'Link esterno',
+};
+
+function participantRoleLabel(participant = {}) {
+  if (participant.organizer) return 'Organizer';
+  if (participant.self) return 'Tu';
+  if (participant.responseStatus === 'accepted') return 'Accepted';
+  if (participant.responseStatus === 'tentative') return 'Tentative';
+  return 'Partecipante';
+}
 
 const Toggle = ({ checked, onChange }) => (
   <button
@@ -32,10 +54,27 @@ export default function Notetaker() {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackTone, setFeedbackTone] = useState('success');
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [shareModalSession, setShareModalSession] = useState(null);
+  const [shareRecipients, setShareRecipients] = useState('');
+  const [shareNote, setShareNote] = useState('');
+  const [shareTemplate, setShareTemplate] = useState('standard');
+  const [customWordsInput, setCustomWordsInput] = useState('');
+  const [autoShareRecipientsInput, setAutoShareRecipientsInput] = useState('');
+  const [sharingSessionId, setSharingSessionId] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [sendingChat, setSendingChat] = useState(false);
 
   const [settings, setSettings] = useState({
     autoJoin: 'all',
     language: 'it',
+    customWords: [],
+    autoShareRecaps: false,
+    shareWithOrganizer: true,
+    autoShareRecipients: [],
+    recapTemplate: 'standard',
     sendFailureEmails: true,
     hideNotetakerImage: true,
     recordingRetention: 'manual',
@@ -54,6 +93,8 @@ export default function Notetaker() {
 
         if (settingsPayload.value) {
           setSettings(settingsPayload.value);
+          setCustomWordsInput((settingsPayload.value.customWords || []).join(', '));
+          setAutoShareRecipientsInput((settingsPayload.value.autoShareRecipients || []).join(', '));
         }
         setCalendarEvents(calendarPayload.events || []);
         setSessions(sessionsPayload.sessions || []);
@@ -67,7 +108,11 @@ export default function Notetaker() {
 
   const saveSettings = async () => {
     try {
-      await api.put('/settings/notetaker', settings);
+      await api.put('/settings/notetaker', {
+        ...settings,
+        customWords: customWordsInput.split(',').map(item => item.trim()).filter(Boolean),
+        autoShareRecipients: autoShareRecipientsInput.split(',').map(item => item.trim()).filter(Boolean),
+      });
       setSettingsPanel(false);
     } catch (error) {
       console.error('Failed to save notetaker settings', error);
@@ -84,6 +129,85 @@ export default function Notetaker() {
   };
 
   const selectedCalendarEvent = calendarEvents.find((event) => event.id === selectedEventId) || null;
+
+  const openShareModal = (session) => {
+    const seeded = session.shared_recipients?.map((item) => item.recipient).filter(Boolean).join(', ') || session.calendar_event_organizer_email || '';
+    setShareRecipients(seeded);
+    setShareNote('');
+    setShareTemplate(settings.recapTemplate || 'standard');
+    setShareModalSession(session);
+  };
+
+  const openSessionChat = async (session) => {
+    setSelectedSession(session);
+    setLoadingChat(true);
+    try {
+      const payload = await api.get(`/notetaker/sessions/${session.id}/chat`);
+      setChatMessages(payload.messages || []);
+    } catch (error) {
+      console.error('Failed to load meeting chat', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Chat riunione non disponibile');
+      setChatMessages([]);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
+  const shareSession = async () => {
+    if (!shareModalSession) {
+      return;
+    }
+
+    setSharingSessionId(shareModalSession.id);
+    try {
+      const payload = await api.post(`/notetaker/sessions/${shareModalSession.id}/share`, {
+        recipients: shareRecipients.split(',').map((item) => item.trim()).filter(Boolean),
+        note: shareNote,
+        template: shareTemplate,
+      });
+      await loadSessions();
+      setFeedbackTone('success');
+      setFeedbackMessage(`Recap preparato per ${payload.shareResults?.length || 0} destinatari`);
+      setShareModalSession(null);
+    } catch (error) {
+      console.error('Failed to share meeting recap', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Condivisione recap fallita');
+    } finally {
+      setSharingSessionId('');
+    }
+  };
+
+  const sendMeetingChat = async () => {
+    if (!selectedSession || !chatInput.trim()) {
+      return;
+    }
+
+    setSendingChat(true);
+    try {
+      const payload = await api.post(`/notetaker/sessions/${selectedSession.id}/chat`, {
+        content: chatInput,
+      });
+      setChatMessages(payload.messages || []);
+      setChatInput('');
+    } catch (error) {
+      console.error('Failed to ask meeting question', error);
+      setFeedbackTone('error');
+      setFeedbackMessage(error.message || 'Invio domanda fallito');
+    } finally {
+      setSendingChat(false);
+    }
+  };
+
+  const suggestedRecipients = shareModalSession ? [
+    ...(shareModalSession.participants || []).map((participant) => participant.email).filter(Boolean),
+    ...(shareModalSession.shared_recipients || []).map((item) => item.recipient).filter(Boolean),
+    ...(settings.autoShareRecipients || []),
+    ...(shareModalSession.calendar_event_organizer_email ? [shareModalSession.calendar_event_organizer_email] : []),
+  ].filter((value, index, array) => value && array.indexOf(value) === index) : [];
+
+  const currentJoinProvider = selectedCalendarEvent?.join_provider || '';
 
   const createRecordSession = async () => {
     setSubmittingRecord(true);
@@ -271,9 +395,9 @@ export default function Notetaker() {
               <div key={event.id} className="flex items-center justify-between rounded-lg border border-gray-100 px-3 py-2">
                 <div>
                   <div className="text-sm font-medium text-gray-900">{event.title}</div>
-                  <div className="text-xs text-gray-500">{event.time_label} · {event.account_email || 'account collegato'}</div>
+                  <div className="text-xs text-gray-500">{event.time_label} · {event.account_email || 'account collegato'} · {event.attendee_count || 0} partecipanti</div>
                 </div>
-                <div className="text-[11px] text-brand">{event.join_provider ? event.join_provider.replaceAll('_', ' ') : 'nessun link'}</div>
+                <div className="text-[11px] text-brand">{event.join_provider ? (providerLabels[event.join_provider] || event.join_provider.replaceAll('_', ' ')) : 'nessun link'}</div>
               </div>
             ))}
             {!calendarEvents.length && (
@@ -339,6 +463,39 @@ export default function Notetaker() {
                     </div>
                   </div>
                 )}
+                {session.participants?.length > 0 && (
+                  <div className="mt-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 mb-1">Partecipanti</div>
+                    <div className="flex flex-wrap gap-2">
+                      {session.participants.slice(0, 6).map((participant, index) => (
+                        <span key={`${session.id}-participant-${index}`} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">
+                          {participant.name || participant.email || 'Partecipante'} · {participantRoleLabel(participant)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={() => openShareModal(session)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-700 hover:border-gray-300"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Condividi recap
+                  </button>
+                  <button
+                    onClick={() => openSessionChat(session)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-700 hover:border-gray-300"
+                  >
+                    <MessageSquareText className="h-3.5 w-3.5" />
+                    Chat con note
+                  </button>
+                  {session.share_status ? (
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-700">
+                      share {session.share_status}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             ))}
             {!sessions.length && (
@@ -501,6 +658,9 @@ export default function Notetaker() {
               </button>
             </div>
             <p className="text-xs text-gray-500 mb-4">Invita il Notetaker AI di MailMind alla tua riunione online per registrare e generare sintesi e trascrizioni.</p>
+            <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 p-3 text-xs text-gray-600">
+              Supporto attuale: Google Meet tramite Google Calendar, Microsoft Teams tramite Outlook/Microsoft Calendar e Zoom tramite join link diretto o evento con URL Zoom.
+            </div>
             <div className="mb-4">
               <label className="text-xs text-gray-500 mb-1 block">Evento collegato (opzionale)</label>
               <select
@@ -544,6 +704,9 @@ export default function Notetaker() {
                 placeholder="https://zoom.us/j/..."
                 className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-brand/20"
               />
+              <div className="mt-2 text-[11px] text-gray-500">
+                Provider rilevato: {providerLabels[currentJoinProvider || (meetingUrl.includes('meet.google.com') ? 'google_meet' : meetingUrl.includes('teams') ? 'microsoft_teams' : meetingUrl.includes('zoom.us') ? 'zoom' : 'external')] || 'manuale'}
+              </div>
             </div>
             <div className="mb-4">
               <label className="text-xs text-gray-500 mb-1 block">Transcript o note (opzionale)</label>
@@ -561,6 +724,129 @@ export default function Notetaker() {
             >
               {submittingJoin ? 'Creazione in corso...' : 'Crea sessione video'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {shareModalSession && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-gray-900">Condividi recap</h3>
+              <button onClick={() => setShareModalSession(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-gray-500 mb-4">MailMind prepara una bozza recap per i destinatari indicati usando il provider collegato alla sessione.</p>
+            <div className="space-y-3">
+              {suggestedRecipients.length ? (
+                <div>
+                  <label className="text-xs text-gray-500 mb-2 block">Destinatari suggeriti</label>
+                  <div className="flex flex-wrap gap-2">
+                    {suggestedRecipients.map((recipient) => (
+                      <button
+                        key={recipient}
+                        type="button"
+                        onClick={() => setShareRecipients((prev) => {
+                          const next = prev.split(',').map((item) => item.trim()).filter(Boolean)
+                          if (next.includes(recipient)) return prev
+                          return [...next, recipient].join(', ')
+                        })}
+                        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-200"
+                      >
+                        + {recipient}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Destinatari</label>
+                <input
+                  type="text"
+                  value={shareRecipients}
+                  onChange={(event) => setShareRecipients(event.target.value)}
+                  placeholder="email1@azienda.it, email2@azienda.it"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Template recap</label>
+                <select
+                  value={shareTemplate}
+                  onChange={(event) => setShareTemplate(event.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+                >
+                  {recapTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>{template.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Nota extra</label>
+                <textarea
+                  value={shareNote}
+                  onChange={(event) => setShareNote(event.target.value)}
+                  placeholder="Aggiungi un contesto o una richiesta operativa da includere nel recap."
+                  className="w-full min-h-24 resize-y rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+                />
+              </div>
+            </div>
+            <button
+              onClick={shareSession}
+              disabled={sharingSessionId === shareModalSession.id}
+              className="mt-5 w-full bg-brand text-white py-3 rounded-xl font-semibold text-sm hover:bg-brand/90 transition-colors disabled:opacity-60"
+            >
+              {sharingSessionId === shareModalSession.id ? 'Preparazione recap...' : 'Condividi recap'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {selectedSession && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
+          <div className="bg-white rounded-2xl max-w-3xl w-full h-[80vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h3 className="font-semibold text-gray-900">Chat con note riunione</h3>
+                <p className="text-sm text-gray-500">{selectedSession.title}</p>
+              </div>
+              <button onClick={() => setSelectedSession(null)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="flex-1 overflow-auto px-6 py-4 space-y-3 bg-gray-50">
+              {loadingChat ? (
+                <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="h-4 w-4 animate-spin" />Caricamento chat...</div>
+              ) : chatMessages.length ? (
+                chatMessages.map((message) => (
+                  <div key={message.id} className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${message.role === 'user' ? 'ml-auto bg-gray-900 text-white' : 'bg-white text-gray-700 border border-gray-100'}`}>
+                    {message.content}
+                  </div>
+                ))
+              ) : (
+                <div className="text-sm text-gray-400">Nessun messaggio ancora. Prova a chiedere i prossimi step o un recap piu' breve.</div>
+              )}
+            </div>
+            <div className="border-t border-gray-100 px-6 py-4 flex items-center gap-3 bg-white">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    sendMeetingChat()
+                  }
+                }}
+                placeholder="Chiedi action items, rischi, decisioni o follow-up della riunione..."
+                className="flex-1 rounded-lg border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:outline-none"
+              />
+              <button
+                onClick={sendMeetingChat}
+                disabled={sendingChat || !chatInput.trim()}
+                className="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+              >
+                {sendingChat ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Invia
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -629,13 +915,51 @@ export default function Notetaker() {
                   <div className="bg-cream rounded-xl border border-gray-200 p-4">
                     <h4 className="text-xs font-semibold text-gray-900 mb-2">Parole personalizzate</h4>
                     <p className="text-xs text-gray-500 mb-2">Migliora l'accuratezza della trascrizione aggiungendo parole personalizzate (nomi aziendali, termini tecnici, acronimi).</p>
-                    <button className="flex items-center gap-1.5 text-sm text-brand font-medium">+ Aggiungi parola</button>
+                    <input
+                      type="text"
+                      value={customWordsInput}
+                      onChange={event => setCustomWordsInput(event.target.value)}
+                      placeholder="Es: MailMind, Fyxer, HubSpot, Calendly"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                    />
                   </div>
 
                   <div className="bg-cream rounded-xl border border-gray-200 p-4">
                     <h4 className="text-xs font-semibold text-gray-900 mb-2">Condivisione automatica registrazioni</h4>
-                    <p className="text-xs text-gray-500 mb-2">Le email aggiunte qui saranno automaticamente invitate alle tue registrazioni.</p>
-                    <button className="flex items-center gap-1.5 text-sm text-brand font-medium">+ Aggiungi email</button>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">Prepara recap in automatico</div>
+                        <div className="text-xs text-gray-500">Usa partecipanti e regole di sharing per preparare il recap senza passaggi manuali.</div>
+                      </div>
+                      <Toggle checked={settings.autoShareRecaps} onChange={v => setSettings(p => ({ ...p, autoShareRecaps: v }))} />
+                    </div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">Includi organizer evento</div>
+                        <div className="text-xs text-gray-500">Se presente nel calendario, l'organizer viene incluso automaticamente.</div>
+                      </div>
+                      <Toggle checked={settings.shareWithOrganizer} onChange={v => setSettings(p => ({ ...p, shareWithOrganizer: v }))} />
+                    </div>
+                    <input
+                      type="text"
+                      value={autoShareRecipientsInput}
+                      onChange={event => setAutoShareRecipientsInput(event.target.value)}
+                      placeholder="Es: ops@azienda.it, founder@azienda.it"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">Aggiungi indirizzi che devono ricevere sempre il recap, separati da virgola.</p>
+                    <div className="mt-3">
+                      <label className="text-xs text-gray-500 mb-1 block">Template recap predefinito</label>
+                      <select
+                        value={settings.recapTemplate}
+                        onChange={event => setSettings(p => ({ ...p, recapTemplate: event.target.value }))}
+                        className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none"
+                      >
+                        {recapTemplates.map((template) => (
+                          <option key={template.id} value={template.id}>{template.label}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
                   <div className="bg-cream rounded-xl border border-gray-200 p-4">

@@ -35,13 +35,19 @@ export function decryptString(payload) {
     return "";
   }
 
-  const key = getKeyMaterial();
-  const iv = Buffer.from(ivEncoded, "base64url");
-  const tag = Buffer.from(tagEncoded, "base64url");
-  const encrypted = Buffer.from(encryptedEncoded, "base64url");
+  try {
+    const key = getKeyMaterial();
+    const iv = Buffer.from(ivEncoded, "base64url");
+    const tag = Buffer.from(tagEncoded, "base64url");
+    const encrypted = Buffer.from(encryptedEncoded, "base64url");
 
-  const decipher = createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
 
-  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  } catch (error) {
+    const decryptionError = new Error("Unsupported state or unable to authenticate data");
+    decryptionError.original = error;
+    throw decryptionError;
+  }
 }

@@ -15,7 +15,7 @@ import {
   upsertPostgresRecord,
   withPostgresTransaction,
 } from "./postgres.js";
-import { putStoredObject } from "./storage.js";
+import { deleteStoredObject, putStoredObject } from "./storage.js";
 import { transcribeAudioBuffer } from "./transcription.js";
 import {
   deleteProviderDraft,
@@ -104,6 +104,7 @@ db.exec(`
     encrypted_access_token TEXT DEFAULT '',
     encrypted_refresh_token TEXT DEFAULT '',
     expires_at TEXT DEFAULT '',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -276,6 +277,7 @@ db.exec(`
     end_at TEXT NOT NULL,
     timezone TEXT DEFAULT '',
     attendee_count INTEGER NOT NULL DEFAULT 0,
+    attendees_json TEXT NOT NULL DEFAULT '[]',
     is_all_day INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -307,9 +309,22 @@ db.exec(`
     key_points_json TEXT NOT NULL DEFAULT '[]',
     action_items_json TEXT NOT NULL DEFAULT '[]',
     follow_up_email TEXT DEFAULT '',
+    participants_json TEXT NOT NULL DEFAULT '[]',
+    share_status TEXT DEFAULT '',
+    shared_at TEXT DEFAULT '',
+    shared_recipients_json TEXT NOT NULL DEFAULT '[]',
     error_message TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS meeting_session_chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
   );
 `);
 
@@ -344,6 +359,23 @@ ensureColumn("meeting_sessions", "source_object_key", "TEXT DEFAULT ''");
 ensureColumn("meeting_sessions", "source_storage_provider", "TEXT DEFAULT ''");
 ensureColumn("meeting_sessions", "transcription_provider", "TEXT DEFAULT ''");
 ensureColumn("meeting_sessions", "utterances_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("connected_accounts", "capabilities_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("calendar_events", "attendees_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("meeting_sessions", "participants_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("meeting_sessions", "share_status", "TEXT DEFAULT ''");
+ensureColumn("meeting_sessions", "shared_at", "TEXT DEFAULT ''");
+ensureColumn("meeting_sessions", "shared_recipients_json", "TEXT NOT NULL DEFAULT '[]'");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meeting_session_chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+`);
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS mail_threads_external_thread_id_idx
@@ -388,6 +420,7 @@ const defaultDrafts = {
   enableDrafts: true,
   unusedDraftsDays: 14,
   responseStyle: "everything",
+  draftVariants: 3,
   enableFollowUps: true,
   followUpDays: 3,
   customTone: false,
@@ -397,9 +430,15 @@ const defaultDrafts = {
   fontColor: "#111111",
   includeSignature: true,
   defaultSignature: "",
+  schedulingSignature: "",
+  includeSchedulingLink: false,
   showThreadingGmail: false,
   showThreadingOutlook: false,
 };
+
+const defaultEmailRules = [];
+const CATEGORY_OPTIONS = new Set(["todo", "fyi", "notification", "marketing", "followUp"]);
+const INBOX_ACTION_OPTIONS = new Set(["keep_default", "keep_inbox", "move_out"]);
 
 const DRAFT_BLOCKED_SENDER_HINTS = [
   "noreply",
@@ -495,6 +534,11 @@ const defaultScheduling = {
 const defaultNotetaker = {
   autoJoin: "all",
   language: "it",
+  customWords: [],
+  autoShareRecaps: false,
+  shareWithOrganizer: true,
+  autoShareRecipients: [],
+  recapTemplate: "standard",
   sendFailureEmails: true,
   hideNotetakerImage: true,
   recordingRetention: "manual",
@@ -509,14 +553,19 @@ const defaultOrganization = {
 };
 
 const defaultBilling = {
-  planName: "PIANO PRO",
-  badge: "+ Prova",
-  price: "EUR39",
+  planName: "STARTER",
+  badge: "7 giorni gratis",
+  price: "EUR20",
   cadence: "mese",
   teamSize: "1 seat",
   nextPayment: "-",
   billingInterval: "Mensile",
   cardMasked: "**** **** **** ****",
+  monthlyPrice: "EUR20",
+  annualPrice: "EUR192",
+  professionalMonthlyPrice: "EUR40",
+  professionalAnnualPrice: "EUR384",
+  trialDays: 7,
 };
 
 const defaultDashboardNotifications = [
@@ -575,6 +624,163 @@ async function upsertPostgresNow(tableName, record, conflictColumns = ["id"]) {
 
 function postgresPrimaryEnabled() {
   return isPostgresPrimaryEnabled();
+}
+
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+  }
+
+  if (typeof value === "string") {
+    return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  }
+
+  return [];
+}
+
+function normalizeAccountCapabilities(value) {
+  return [...new Set(normalizeStringArray(value).map((item) => item.toLowerCase()))];
+}
+
+function accountCapabilities(account) {
+  const explicit = normalizeAccountCapabilities(safeJsonParse(account?.capabilities_json || "[]", []));
+  if (explicit.length > 0) {
+    return explicit;
+  }
+
+  if (account?.provider === "google" || account?.provider === "microsoft") {
+    return ["mail", "calendar"];
+  }
+
+  if (account?.provider === "zoom") {
+    return ["meetings"];
+  }
+
+  return [];
+}
+
+function normalizeEmailRule(rule = {}, index = 0) {
+  const category = CATEGORY_OPTIONS.has(rule.category) ? rule.category : "todo";
+  const inboxAction = INBOX_ACTION_OPTIONS.has(rule.inboxAction) ? rule.inboxAction : "keep_default";
+
+  return {
+    id: String(rule.id || `rule-${index + 1}`).trim() || `rule-${index + 1}`,
+    name: String(rule.name || "").trim() || `Regola ${index + 1}`,
+    enabled: rule.enabled !== false,
+    match: rule.match === "all" ? "all" : "any",
+    senders: normalizeStringArray(rule.senders),
+    domains: normalizeStringArray(rule.domains).map((item) => item.replace(/^@+/, "").toLowerCase()),
+    keywords: normalizeStringArray(rule.keywords),
+    category,
+    inboxAction,
+  };
+}
+
+function normalizeEmailRules(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((rule, index) => normalizeEmailRule(rule, index));
+}
+
+function normalizeCategoryOverrides(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([threadId, override]) => {
+        if (!override || typeof override !== "object") {
+          return null;
+        }
+
+        const category = CATEGORY_OPTIONS.has(override.category) ? override.category : "";
+        if (!category) {
+          return null;
+        }
+
+        const inboxAction = INBOX_ACTION_OPTIONS.has(override.inboxAction)
+          ? override.inboxAction
+          : "keep_default";
+
+        return [threadId, {
+          category,
+          inboxAction,
+          reason: String(override.reason || "Classificazione aggiornata manualmente.").trim(),
+          updatedAt: String(override.updatedAt || nowIso()).trim(),
+        }];
+      })
+      .filter(Boolean),
+  );
+}
+
+function threadMatchesEmailRule(thread, rule) {
+  const checks = [];
+  const fromEmail = String(thread.from_email || "").toLowerCase();
+  const searchableText = [thread.subject, thread.snippet, thread.from_name, thread.from_email]
+    .map((item) => String(item || "").toLowerCase())
+    .join(" ");
+
+  if (rule.senders.length > 0) {
+    checks.push(rule.senders.some((sender) => fromEmail === sender.toLowerCase()));
+  }
+
+  if (rule.domains.length > 0) {
+    checks.push(rule.domains.some((domain) => fromEmail.endsWith(`@${domain}`)));
+  }
+
+  if (rule.keywords.length > 0) {
+    checks.push(rule.keywords.some((keyword) => searchableText.includes(keyword.toLowerCase())));
+  }
+
+  if (checks.length === 0) {
+    return false;
+  }
+
+  return rule.match === "all" ? checks.every(Boolean) : checks.some(Boolean);
+}
+
+function applyEmailRulesToClassification(thread, classification, rules = []) {
+  for (const rule of rules) {
+    if (!rule.enabled || !threadMatchesEmailRule(thread, rule)) {
+      continue;
+    }
+
+    return {
+      ...classification,
+      category: rule.category,
+      inboxAction: rule.inboxAction || classification.inboxAction,
+      reason: `Regola inbox "${rule.name}" applicata automaticamente.`,
+      confidence: 0.99,
+      matchedRuleId: rule.id,
+      matchedRuleName: rule.name,
+    };
+  }
+
+  return classification;
+}
+
+function applyManualOverrideToClassification(threadId, classification, overrides = {}) {
+  const override = overrides[threadId];
+  if (!override) {
+    return classification;
+  }
+
+  return {
+    ...classification,
+    category: override.category,
+    inboxAction: override.inboxAction || classification.inboxAction,
+    reason: override.reason || "Classificazione aggiornata manualmente.",
+    confidence: 1,
+    manualOverride: true,
+  };
+}
+
+function applyThreadClassificationPolicies(thread, classification, emailRules = [], categoryOverrides = {}) {
+  const ruled = applyEmailRulesToClassification(thread, classification, emailRules);
+  return applyManualOverrideToClassification(thread.id, ruled, categoryOverrides);
 }
 
 function listSqliteRowsByValues(tableName, columnName, values = []) {
@@ -839,6 +1045,39 @@ export function listNotifications(userId) {
   return db.prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC").all(userId);
 }
 
+function createNotification(userId, { title, body, link = "" }) {
+  const id = randomUUID();
+  const row = {
+    id,
+    user_id: userId,
+    title: String(title || "").trim(),
+    body: String(body || "").trim(),
+    link: String(link || "").trim(),
+    read_at: "",
+    created_at: nowIso(),
+  };
+  db.prepare(
+    "INSERT INTO notifications (id, user_id, title, body, link, read_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(row.id, row.user_id, row.title, row.body, row.link, row.read_at, row.created_at);
+  queuePostgresUpsert("notifications.create", "notifications", row, ["id"]);
+  return row;
+}
+
+export async function createNotificationRuntime(userId, payload) {
+  const row = createNotification(userId, payload);
+  if (!postgresPrimaryEnabled()) {
+    return row;
+  }
+
+  try {
+    await upsertPostgresNow("notifications", row, ["id"]);
+  } catch {
+    return row;
+  }
+
+  return row;
+}
+
 export async function listNotificationsRuntime(userId) {
   if (!postgresPrimaryEnabled()) {
     return listNotifications(userId);
@@ -871,6 +1110,17 @@ export function getSetting(key, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function buildScopedSettingKey(scope, key) {
+  const normalizedScope = String(scope || "").trim();
+  const normalizedKey = String(key || "").trim();
+
+  if (!normalizedScope || !normalizedKey) {
+    throw new Error("Setting scope and key are required");
+  }
+
+  return `workspace:${normalizedScope}:${normalizedKey}`;
 }
 
 export function setSetting(key, value) {
@@ -1084,19 +1334,25 @@ export function upsertConnectedAccount({
   encryptedAccessToken,
   encryptedRefreshToken,
   expiresAt,
+  capabilities = [],
 }) {
   const existing = db.prepare(
     "SELECT * FROM connected_accounts WHERE user_id = ? AND provider = ? AND email = ?",
   ).get(userId, provider, email);
 
   const now = nowIso();
+  const normalizedCapabilities = normalizeAccountCapabilities(capabilities);
 
   if (existing) {
+    const mergedCapabilities = [...new Set([
+      ...normalizeAccountCapabilities(safeJsonParse(existing.capabilities_json || "[]", [])),
+      ...normalizedCapabilities,
+    ])];
     db.prepare(`
       UPDATE connected_accounts
-      SET display_name = ?, external_account_id = ?, encrypted_access_token = ?, encrypted_refresh_token = ?, expires_at = ?, updated_at = ?
+      SET display_name = ?, external_account_id = ?, encrypted_access_token = ?, encrypted_refresh_token = ?, expires_at = ?, capabilities_json = ?, updated_at = ?
       WHERE id = ?
-    `).run(displayName, externalAccountId, encryptedAccessToken, encryptedRefreshToken, expiresAt, now, existing.id);
+    `).run(displayName, externalAccountId, encryptedAccessToken, encryptedRefreshToken, expiresAt, JSON.stringify(mergedCapabilities), now, existing.id);
     const row = db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(existing.id);
     queuePostgresUpsert("connected_accounts.update", "connected_accounts", row, ["id"]);
     return row;
@@ -1106,8 +1362,8 @@ export function upsertConnectedAccount({
   db.prepare(`
     INSERT INTO connected_accounts (
       id, workspace_id, user_id, provider, email, display_name, external_account_id,
-      encrypted_access_token, encrypted_refresh_token, expires_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      encrypted_access_token, encrypted_refresh_token, expires_at, capabilities_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     workspaceId,
@@ -1119,6 +1375,7 @@ export function upsertConnectedAccount({
     encryptedAccessToken,
     encryptedRefreshToken,
     expiresAt || "",
+    JSON.stringify(normalizedCapabilities),
     now,
     now,
   );
@@ -1684,6 +1941,17 @@ export async function getSettingRuntime(key, fallback = null) {
   }
 }
 
+export async function getScopedSettingRuntime(scope, key, fallback = null) {
+  const scopedKey = buildScopedSettingKey(scope, key);
+  const missing = Symbol("missing_setting");
+  const scopedValue = await getSettingRuntime(scopedKey, missing);
+  if (scopedValue !== missing) {
+    return scopedValue;
+  }
+
+  return getSettingRuntime(key, fallback);
+}
+
 export async function setSettingRuntime(key, value) {
   const next = setSetting(key, value);
   if (!postgresPrimaryEnabled()) {
@@ -1698,6 +1966,117 @@ export async function setSettingRuntime(key, value) {
   }
 
   return next;
+}
+
+export async function setScopedSettingRuntime(scope, key, value) {
+  return setSettingRuntime(buildScopedSettingKey(scope, key), value);
+}
+
+export async function listEmailRulesRuntime(scope) {
+  const rules = await getScopedSettingRuntime(scope, "email-rules", defaultEmailRules);
+  return normalizeEmailRules(rules);
+}
+
+export async function setEmailRulesRuntime(scope, rules) {
+  const normalized = normalizeEmailRules(rules);
+  await setScopedSettingRuntime(scope, "email-rules", normalized);
+  return normalized;
+}
+
+async function listThreadCategoryOverridesRuntime(scope) {
+  const overrides = await getScopedSettingRuntime(scope, "thread-category-overrides", {});
+  return normalizeCategoryOverrides(overrides);
+}
+
+function findMailThread(userId, threadId) {
+  return db.prepare("SELECT * FROM mail_threads WHERE id = ? AND user_id = ?").get(threadId, userId) || null;
+}
+
+async function findMailThreadRuntime(userId, threadId) {
+  if (!postgresPrimaryEnabled()) {
+    return findMailThread(userId, threadId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM mail_threads WHERE id = $1 AND user_id = $2",
+      [threadId, userId],
+    );
+    return row || findMailThread(userId, threadId);
+  } catch {
+    return findMailThread(userId, threadId);
+  }
+}
+
+export async function setThreadCategoryOverrideRuntime(userId, scope, threadId, patch = {}) {
+  const thread = await findMailThreadRuntime(userId, threadId);
+  if (!thread) {
+    return null;
+  }
+
+  const overrides = await listThreadCategoryOverridesRuntime(scope);
+  if (patch.clearOverride) {
+    delete overrides[threadId];
+    await setScopedSettingRuntime(scope, "thread-category-overrides", overrides);
+    return { cleared: true };
+  }
+
+  const category = CATEGORY_OPTIONS.has(patch.category) ? patch.category : "";
+  if (!category) {
+    const error = new Error("Unsupported category");
+    error.status = 400;
+    throw error;
+  }
+
+  overrides[threadId] = {
+    category,
+    inboxAction: INBOX_ACTION_OPTIONS.has(patch.inboxAction) ? patch.inboxAction : "keep_default",
+    reason: String(patch.reason || `Classificazione aggiornata manualmente in ${category}.`).trim(),
+    updatedAt: nowIso(),
+  };
+
+  await setScopedSettingRuntime(scope, "thread-category-overrides", overrides);
+
+  const existingClassification = await getThreadClassificationRuntime(threadId);
+  const nextReason = overrides[threadId].reason;
+  const nextInboxAction = overrides[threadId].inboxAction || existingClassification?.inbox_action || "keep_default";
+  const nextTopicLabel = existingClassification?.topic_label || "";
+  const nextUpdatedAt = overrides[threadId].updatedAt;
+
+  db.prepare("UPDATE mail_threads SET category = ? WHERE id = ?").run(category, threadId);
+  db.prepare(`
+    INSERT INTO thread_classifications (thread_id, user_id, category, topic_label, inbox_action, reason, confidence, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(thread_id) DO UPDATE SET
+      category = excluded.category,
+      topic_label = excluded.topic_label,
+      inbox_action = excluded.inbox_action,
+      reason = excluded.reason,
+      confidence = excluded.confidence,
+      updated_at = excluded.updated_at
+  `).run(threadId, userId, category, nextTopicLabel, nextInboxAction, nextReason, 1, nextUpdatedAt);
+
+  if (postgresPrimaryEnabled()) {
+    try {
+      await withPostgresTransaction(async (postgres) => {
+        await postgres.query("UPDATE mail_threads SET category = $1 WHERE id = $2", [category, threadId]);
+        await upsertPostgresRecord(postgres, "thread_classifications", {
+          thread_id: threadId,
+          user_id: userId,
+          category,
+          topic_label: nextTopicLabel,
+          inbox_action: nextInboxAction,
+          reason: nextReason,
+          confidence: 1,
+          updated_at: nextUpdatedAt,
+        }, ["thread_id"]);
+      });
+    } catch {
+      return overrides[threadId];
+    }
+  }
+
+  return overrides[threadId];
 }
 
 export async function createSessionRuntime(userId) {
@@ -1803,6 +2182,36 @@ export async function consumeOauthStateRuntime(state, provider) {
     return row;
   } catch {
     return consumeOauthState(state, provider);
+  }
+}
+
+export async function getOauthStateRuntime(state, provider) {
+  if (!postgresPrimaryEnabled()) {
+    const row = db.prepare("SELECT * FROM oauth_states WHERE state = ? AND provider = ?").get(state, provider);
+    if (!row || new Date(row.expires_at) <= new Date()) {
+      return null;
+    }
+    return row;
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM oauth_states WHERE state = $1 AND provider = $2",
+      [state, provider],
+    );
+    if (!row) {
+      return db.prepare("SELECT * FROM oauth_states WHERE state = ? AND provider = ?").get(state, provider) || null;
+    }
+    if (new Date(row.expires_at) <= new Date()) {
+      return null;
+    }
+    return row;
+  } catch {
+    const row = db.prepare("SELECT * FROM oauth_states WHERE state = ? AND provider = ?").get(state, provider);
+    if (!row || new Date(row.expires_at) <= new Date()) {
+      return null;
+    }
+    return row;
   }
 }
 
@@ -2344,7 +2753,11 @@ export function getBillingSummary() {
   return getSetting("billing", defaultBilling);
 }
 
-export async function getBillingSummaryRuntime() {
+export async function getBillingSummaryRuntime(workspaceId = "") {
+  if (workspaceId) {
+    return getScopedSettingRuntime(workspaceId, "billing", defaultBilling);
+  }
+
   return getSettingRuntime("billing", defaultBilling);
 }
 
@@ -2481,7 +2894,32 @@ export function listConversationMessages(conversationId) {
   return db.prepare("SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC").all(conversationId);
 }
 
-export async function listConversationMessagesRuntime(conversationId) {
+function findConversationForUser(userId, conversationId) {
+  return db.prepare("SELECT * FROM chat_conversations WHERE id = ? AND user_id = ?").get(conversationId, userId);
+}
+
+export async function findConversationForUserRuntime(userId, conversationId) {
+  if (!postgresPrimaryEnabled()) {
+    return findConversationForUser(userId, conversationId);
+  }
+
+  try {
+    const row = await queryPostgresRow(
+      "SELECT * FROM chat_conversations WHERE id = $1 AND user_id = $2",
+      [conversationId, userId],
+    );
+    return row || findConversationForUser(userId, conversationId);
+  } catch {
+    return findConversationForUser(userId, conversationId);
+  }
+}
+
+export async function listConversationMessagesRuntime(userId, conversationId) {
+  const conversation = await findConversationForUserRuntime(userId, conversationId);
+  if (!conversation) {
+    return null;
+  }
+
   if (!postgresPrimaryEnabled()) {
     return listConversationMessages(conversationId);
   }
@@ -2505,12 +2943,12 @@ export function addConversationMessage(conversationId, role, content) {
   return db.prepare("SELECT * FROM chat_messages WHERE id = ?").get(id);
 }
 
-export async function addConversationMessageRuntime(conversationId, role, content) {
-  const conversation = db.prepare(`
-    SELECT cc.*
-    FROM chat_conversations cc
-    WHERE cc.id = ?
-  `).get(conversationId);
+export async function addConversationMessageRuntime(userId, conversationId, role, content) {
+  const conversation = await findConversationForUserRuntime(userId, conversationId);
+  if (!conversation) {
+    return null;
+  }
+
   const message = addConversationMessage(conversationId, role, content);
   if (!message || !postgresPrimaryEnabled() || !conversation?.user_id) {
     return message;
@@ -2604,7 +3042,15 @@ function demoThreadsForAccount(account) {
 }
 
 function isDemoConnectedAccount(account) {
-  return account.external_account_id?.startsWith("demo-") || !account.encrypted_access_token?.includes(".");
+  if (account.external_account_id?.startsWith("demo-")) {
+    return true;
+  }
+
+  if (account.provider === "zoom") {
+    return false;
+  }
+
+  return !account.encrypted_access_token?.includes(".");
 }
 
 function demoCalendarEventsForAccount(account, options = {}) {
@@ -2692,6 +3138,7 @@ function upsertCalendarEvent(userId, account, event) {
     event.endAt || event.startAt,
     event.timezone || "",
     Number(event.attendeeCount || 0),
+    JSON.stringify(event.attendees || []),
     event.isAllDay ? 1 : 0,
     now,
   ];
@@ -2700,8 +3147,8 @@ function upsertCalendarEvent(userId, account, event) {
     db.prepare(`
       UPDATE calendar_events
       SET user_id = ?, connected_account_id = ?, provider = ?, external_event_id = ?, calendar_id = ?, title = ?,
-          organizer_name = ?, organizer_email = ?, meeting_url = ?, join_provider = ?, location = ?, status = ?,
-          start_at = ?, end_at = ?, timezone = ?, attendee_count = ?, is_all_day = ?, updated_at = ?
+      organizer_name = ?, organizer_email = ?, meeting_url = ?, join_provider = ?, location = ?, status = ?,
+          start_at = ?, end_at = ?, timezone = ?, attendee_count = ?, attendees_json = ?, is_all_day = ?, updated_at = ?
       WHERE id = ?
     `).run(...payload, existing.id);
     return existing.id;
@@ -2712,8 +3159,8 @@ function upsertCalendarEvent(userId, account, event) {
     INSERT INTO calendar_events (
       id, user_id, connected_account_id, provider, external_event_id, calendar_id, title, organizer_name,
       organizer_email, meeting_url, join_provider, location, status, start_at, end_at, timezone,
-      attendee_count, is_all_day, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      attendee_count, attendees_json, is_all_day, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     ...payload,
@@ -2788,6 +3235,7 @@ async function syncCalendarWindowPostgresPrimary(userId, account, events, window
         end_at: event.endAt || event.startAt,
         timezone: event.timezone || "",
         attendee_count: Number(event.attendeeCount || 0),
+        attendees_json: JSON.stringify(event.attendees || []),
         is_all_day: event.isAllDay ? 1 : 0,
         created_at: existing?.created_at || now,
         updated_at: now,
@@ -2996,13 +3444,28 @@ export async function syncCalendarRuntime(userId, accountId = null, options = {}
     ? (await listConnectedAccountsRuntime(userId)).filter((account) => account.id === accountId)
     : await listConnectedAccountsRuntime(userId);
 
+  const supportedAccounts = accounts.filter((account) => ["google", "microsoft"].includes(account?.provider) && accountCapabilities(account).includes("calendar"));
+  if (accountId && supportedAccounts.length === 0) {
+    const error = new Error("Calendar sync not supported for this provider");
+    error.status = 400;
+    throw error;
+  }
+
+  if (supportedAccounts.length === 0) {
+    return {
+      syncedAccounts: 0,
+      importedEvents: 0,
+      accounts: [],
+    };
+  }
+
   const results = [];
-  for (const account of accounts) {
+  for (const account of supportedAccounts) {
     results.push(await syncAccountCalendar(userId, account, options));
   }
 
   const result = {
-    syncedAccounts: accounts.length,
+    syncedAccounts: supportedAccounts.length,
     importedEvents: results.reduce((sum, item) => sum + item.importedEvents, 0),
     accounts: results,
   };
@@ -3060,10 +3523,49 @@ export async function listCalendarEventsRuntime(userId, options = {}) {
 function normalizeMeetingSessionRow(row) {
   return {
     ...row,
+    participants: safeJsonParse(row.participants_json || "[]", []),
     utterances: safeJsonParse(row.utterances_json || "[]", []),
     key_points: safeJsonParse(row.key_points_json || "[]", []),
     action_items: safeJsonParse(row.action_items_json || "[]", []),
+    shared_recipients: safeJsonParse(row.shared_recipients_json || "[]", []),
   };
+}
+
+function normalizeEventAttendees(value) {
+  return safeJsonParse(value || "[]", [])
+    .map((item) => ({
+      email: String(item?.email || "").trim().toLowerCase(),
+      name: String(item?.name || item?.displayName || "").trim(),
+      responseStatus: String(item?.responseStatus || "").trim(),
+      organizer: Boolean(item?.organizer),
+      self: Boolean(item?.self),
+    }))
+    .filter((item) => item.email)
+}
+
+function deriveMeetingParticipants(session, calendarEvent) {
+  const attendees = normalizeEventAttendees(calendarEvent?.attendees_json || "[]")
+  const speakerNames = [...new Set((session.utterances || []).map((item) => String(item?.speaker || "").trim()).filter(Boolean))]
+  const participants = [...attendees]
+
+  for (const speakerName of speakerNames) {
+    const alreadyPresent = participants.some((item) => item.name.toLowerCase() === speakerName.toLowerCase())
+    if (!alreadyPresent) {
+      participants.push({ email: "", name: speakerName, responseStatus: "", organizer: false, self: false })
+    }
+  }
+
+  if (session.calendar_event_organizer_email && !participants.some((item) => item.email === session.calendar_event_organizer_email)) {
+    participants.unshift({
+      email: String(session.calendar_event_organizer_email).trim().toLowerCase(),
+      name: session.calendar_event_organizer_email,
+      responseStatus: "accepted",
+      organizer: true,
+      self: false,
+    })
+  }
+
+  return participants
 }
 
 async function getMeetingSessionRuntime(userId, sessionId) {
@@ -3241,6 +3743,25 @@ async function updateMeetingSessionArtifactsRuntime(userId, sessionId, patch) {
   return getMeetingSessionRuntime(userId, sessionId);
 }
 
+async function updateMeetingSessionParticipantsRuntime(userId, sessionId, participants = []) {
+  const participantsJson = JSON.stringify(participants || [])
+  db.prepare("UPDATE meeting_sessions SET participants_json = ?, updated_at = ? WHERE id = ? AND user_id = ?")
+    .run(participantsJson, nowIso(), sessionId, userId)
+
+  if (postgresPrimaryEnabled()) {
+    try {
+      await queryPostgres(
+        "UPDATE meeting_sessions SET participants_json = $1, updated_at = $2 WHERE id = $3 AND user_id = $4",
+        [participantsJson, nowIso(), sessionId, userId],
+      )
+    } catch {
+      return getMeetingSessionRuntime(userId, sessionId)
+    }
+  }
+
+  return getMeetingSessionRuntime(userId, sessionId)
+}
+
 export function listMeetingSessions(userId) {
   const rows = db.prepare(`
     SELECT
@@ -3309,8 +3830,8 @@ export async function createMeetingSession(userId, payload = {}) {
       join_provider, language, source_file_name, source_file_type, source_file_size, source_object_key,
       source_storage_provider, transcription_provider,
       started_at, ended_at, duration_minutes, transcript_text, utterances_json, summary_text, key_points_json,
-      action_items_json, follow_up_email, error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      action_items_json, follow_up_email, participants_json, share_status, shared_at, shared_recipients_json, error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     userId,
@@ -3337,6 +3858,10 @@ export async function createMeetingSession(userId, payload = {}) {
     "[]",
     "[]",
     "",
+    JSON.stringify(normalizeEventAttendees(calendarEvent?.attendees_json || "[]")),
+    "",
+    "",
+    "[]",
     "",
     now,
     now,
@@ -3413,6 +3938,10 @@ export async function createMeetingSessionRuntime(userId, payload = {}) {
     key_points_json: "[]",
     action_items_json: "[]",
     follow_up_email: "",
+    participants_json: JSON.stringify(normalizeEventAttendees(calendarEvent?.attendees_json || "[]")),
+    share_status: "",
+    shared_at: "",
+    shared_recipients_json: "[]",
     error_message: "",
     created_at: now,
     updated_at: now,
@@ -3434,7 +3963,7 @@ export async function createMeetingSessionRuntime(userId, payload = {}) {
       ? Math.max(0, meetingDurationMinutes({ start_at: created.started_at, end_at: created.ended_at }))
       : 0;
 
-    return await updateMeetingSessionArtifactsRuntime(userId, id, {
+    const updated = await updateMeetingSessionArtifactsRuntime(userId, id, {
       status: "ready",
       transcriptText,
       utterances: payload.utterances || [],
@@ -3446,6 +3975,8 @@ export async function createMeetingSessionRuntime(userId, payload = {}) {
       transcriptionProvider: payload.transcriptionProvider || "",
       errorMessage: "",
     });
+    const withParticipants = await updateMeetingSessionParticipantsRuntime(userId, id, deriveMeetingParticipants(updated, calendarEvent));
+    return maybeAutoShareMeetingSessionRuntime(userId, withParticipants);
   } catch (error) {
     await updateMeetingSessionArtifactsRuntime(userId, id, {
       status: "failed",
@@ -3498,6 +4029,12 @@ export async function processMeetingSession(userId, sessionId, transcriptText = 
       transcriptionProvider: existing.transcription_provider || "",
       errorMessage: "",
     });
+    const withParticipants = await updateMeetingSessionParticipantsRuntime(
+      userId,
+      sessionId,
+      deriveMeetingParticipants(normalizeMeetingSessionRow(db.prepare("SELECT * FROM meeting_sessions WHERE id = ?").get(sessionId)), calendarEvent),
+    );
+    return maybeAutoShareMeetingSessionRuntime(userId, withParticipants);
   } catch (error) {
     updateMeetingSessionArtifacts(sessionId, {
       status: "failed",
@@ -3547,7 +4084,7 @@ export async function processMeetingSessionRuntime(userId, sessionId, transcript
       ? Math.max(0, meetingDurationMinutes({ start_at: existing.started_at, end_at: existing.ended_at }))
       : Number(existing.duration_minutes || 0);
 
-    return await updateMeetingSessionArtifactsRuntime(userId, sessionId, {
+    const updated = await updateMeetingSessionArtifactsRuntime(userId, sessionId, {
       status: "ready",
       transcriptText: nextTranscript,
       utterances: existing.utterances || [],
@@ -3559,6 +4096,8 @@ export async function processMeetingSessionRuntime(userId, sessionId, transcript
       transcriptionProvider: existing.transcription_provider || "",
       errorMessage: "",
     });
+    const withParticipants = await updateMeetingSessionParticipantsRuntime(userId, sessionId, deriveMeetingParticipants(updated, calendarEvent));
+    return maybeAutoShareMeetingSessionRuntime(userId, withParticipants);
   } catch (error) {
     await updateMeetingSessionArtifactsRuntime(userId, sessionId, {
       status: "failed",
@@ -3573,6 +4112,319 @@ export async function processMeetingSessionRuntime(userId, sessionId, transcript
       errorMessage: error instanceof Error ? error.message : String(error),
     });
     throw error;
+  }
+}
+
+function fallbackMeetingChatAnswer(session, question = "") {
+  const summary = String(session.summary_text || "").trim()
+  const actionItems = Array.isArray(session.action_items) ? session.action_items : []
+  return [
+    summary ? `Recap: ${summary}` : `Non ho ancora un recap completo per "${session.title}".`,
+    actionItems.length
+      ? `Action items principali: ${actionItems.slice(0, 3).map((item) => `${item.owner || 'Da assegnare'} - ${item.task}`).join('; ')}`
+      : "Non risultano action item confermati.",
+    question ? `Domanda ricevuta: ${question}` : "",
+  ].filter(Boolean).join('\n\n')
+}
+
+export async function listMeetingSessionChatMessagesRuntime(userId, sessionId) {
+  const session = await getMeetingSessionRuntime(userId, sessionId)
+  if (!session) {
+    return null
+  }
+
+  if (!postgresPrimaryEnabled()) {
+    return db.prepare(`
+      SELECT * FROM meeting_session_chat_messages
+      WHERE session_id = ? AND user_id = ?
+      ORDER BY datetime(created_at) ASC, id ASC
+    `).all(sessionId, userId)
+  }
+
+  try {
+    return await queryPostgresRows(`
+      SELECT * FROM meeting_session_chat_messages
+      WHERE session_id = $1 AND user_id = $2
+      ORDER BY created_at ASC, id ASC
+    `, [sessionId, userId])
+  } catch {
+    return db.prepare(`
+      SELECT * FROM meeting_session_chat_messages
+      WHERE session_id = ? AND user_id = ?
+      ORDER BY datetime(created_at) ASC, id ASC
+    `).all(sessionId, userId)
+  }
+}
+
+async function appendMeetingSessionChatMessageRuntime(userId, sessionId, role, content) {
+  const row = {
+    id: randomUUID(),
+    session_id: sessionId,
+    user_id: userId,
+    role,
+    content: String(content || "").trim(),
+    created_at: nowIso(),
+  }
+
+  db.prepare(`
+    INSERT INTO meeting_session_chat_messages (id, session_id, user_id, role, content, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.session_id, row.user_id, row.role, row.content, row.created_at)
+
+  if (postgresPrimaryEnabled()) {
+    try {
+      await upsertPostgresNow("meeting_session_chat_messages", row, ["id"])
+    } catch {
+      return row
+    }
+  }
+
+  return row
+}
+
+export async function askMeetingSessionQuestionRuntime(userId, sessionId, question = "") {
+  const session = await getMeetingSessionRuntime(userId, sessionId)
+  if (!session) {
+    return null
+  }
+
+  const trimmedQuestion = String(question || "").trim()
+  if (!trimmedQuestion) {
+    const error = new Error("Question content required")
+    error.status = 400
+    throw error
+  }
+
+  await appendMeetingSessionChatMessageRuntime(userId, sessionId, "user", trimmedQuestion)
+
+  let answer = fallbackMeetingChatAnswer(session, trimmedQuestion)
+  if (hasGeminiCredentials()) {
+    try {
+      const prompt = [
+        "Rispondi a una domanda su una riunione in modo conciso e utile.",
+        `Titolo: ${session.title}`,
+        `Summary: ${session.summary_text || ''}`,
+        `Key points: ${(session.key_points || []).join(' | ')}`,
+        `Action items: ${(session.action_items || []).map((item) => `${item.owner || 'Da assegnare'}:${item.task}`).join(' | ')}`,
+        `Follow-up email: ${session.follow_up_email || ''}`,
+        `Transcript: ${trimTranscript(session.transcript_text || '').slice(0, 4000)}`,
+        `Domanda utente: ${trimmedQuestion}`,
+      ].join('\n')
+      const result = await generateTextWithGemini({
+        model: process.env.GEMINI_CHAT_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash",
+        systemInstruction: "Sei un assistente executive per note riunione. Rispondi in italiano, in modo operativo e preciso.",
+        prompt,
+        temperature: 0.2,
+        maxOutputTokens: 500,
+      })
+      if (result.text.trim()) {
+        answer = result.text.trim()
+      }
+    } catch {
+      answer = fallbackMeetingChatAnswer(session, trimmedQuestion)
+    }
+  }
+
+  const assistantMessage = await appendMeetingSessionChatMessageRuntime(userId, sessionId, "assistant", answer)
+  return {
+    answer,
+    assistantMessage,
+    messages: await listMeetingSessionChatMessagesRuntime(userId, sessionId),
+  }
+}
+
+function defaultMeetingShareRecipients(session) {
+  const recipients = []
+  if (session.calendar_event_organizer_email) {
+    recipients.push(session.calendar_event_organizer_email)
+  }
+  return [...new Set(recipients.filter(Boolean))]
+}
+
+function resolveAutoMeetingShareRecipients(session, notetakerSettings = {}) {
+  const recipients = []
+  if (notetakerSettings.shareWithOrganizer !== false && session.calendar_event_organizer_email) {
+    recipients.push(session.calendar_event_organizer_email)
+  }
+
+  if (Array.isArray(session.participants)) {
+    for (const participant of session.participants) {
+      if (!participant?.email) {
+        continue
+      }
+      if (participant.self) {
+        continue
+      }
+      recipients.push(String(participant.email).trim().toLowerCase())
+    }
+  }
+
+  for (const recipient of normalizeStringArray(notetakerSettings.autoShareRecipients)) {
+    recipients.push(recipient.toLowerCase())
+  }
+
+  return [...new Set(recipients.filter(Boolean))]
+}
+
+function buildMeetingRecapEmail(session, note = "", template = "standard") {
+  const keyPoints = (session.key_points || []).slice(0, 5).map((item) => `- ${item}`)
+  const actionItems = (session.action_items || []).slice(0, 5).map((item) => `- ${item.owner || 'Da assegnare'}: ${item.task}`)
+  const intro = {
+    standard: `ti condivido il recap della riunione "${session.title}".`,
+    concise: `ecco il recap rapido di "${session.title}".`,
+    action: `ti invio il recap operativo di "${session.title}", con focus sui prossimi step.`,
+  }[template] || `ti condivido il recap della riunione "${session.title}".`
+
+  const summaryBlock = template === 'concise'
+    ? (session.summary_text || session.follow_up_email || "Recap non ancora disponibile.")
+    : (session.summary_text || session.follow_up_email || "Recap non ancora disponibile.")
+  return [
+    `Ciao,`,
+    "",
+    intro,
+    "",
+    summaryBlock,
+    template !== 'concise' && keyPoints.length ? "\nKey points:\n" + keyPoints.join("\n") : "",
+    actionItems.length ? "\nAction items:\n" + actionItems.join("\n") : "",
+    note ? `\nNota aggiuntiva:\n${note}` : "",
+  ].filter(Boolean).join("\n")
+}
+
+export async function shareMeetingSessionRuntime(userId, sessionId, payload = {}) {
+  const session = await getMeetingSessionRuntime(userId, sessionId)
+  if (!session) {
+    return null
+  }
+
+  const accountForSettings = session.connected_account_id
+    ? await findConnectedAccountByIdRuntime(session.connected_account_id)
+    : null
+  const notetakerSettings = accountForSettings?.workspace_id
+    ? await getScopedSettingRuntime(accountForSettings.workspace_id, "notetaker", defaultNotetaker)
+    : await getSettingRuntime("notetaker", defaultNotetaker)
+
+  const recipients = [...new Set([
+    ...normalizeStringArray(payload.recipients),
+    ...(payload.includeOrganizer === false ? [] : defaultMeetingShareRecipients(session)),
+  ])]
+  if (!recipients.length) {
+    const error = new Error("At least one recipient is required")
+    error.status = 400
+    throw error
+  }
+
+  const subject = payload.subject || `Recap riunione: ${session.title}`
+  const recapTemplate = String(payload.template || notetakerSettings.recapTemplate || 'standard')
+  const content = buildMeetingRecapEmail(session, payload.note || "", recapTemplate)
+  let shareStatus = "prepared"
+  const shareResults = []
+
+  const account = session.connected_account_id
+    ? await findConnectedAccountByIdRuntime(session.connected_account_id)
+    : (await listConnectedAccountsRuntime(userId))[0] || null
+
+  if (account) {
+    for (const recipient of recipients) {
+      if (isDemoConnectedAccount(account)) {
+        shareResults.push({ recipient, status: "local_only" })
+        shareStatus = "local_only"
+        continue
+      }
+
+      try {
+        const result = await upsertProviderDraft(account, {
+          providerDraftId: "",
+          providerMessageId: "",
+          threadExternalId: "",
+          replyToExternalMessageId: "",
+          replyToInternetMessageId: "",
+          toEmail: recipient,
+          subject,
+          content,
+        }, {
+          onTokenRefresh: async (tokenUpdate) => {
+            await updateConnectedAccountTokensRuntime(account.id, tokenUpdate)
+          },
+        })
+        shareResults.push({
+          recipient,
+          status: "draft_created",
+          providerDraftId: result.providerDraftId || "",
+        })
+        shareStatus = "draft_created"
+      } catch (error) {
+        shareResults.push({ recipient, status: "failed", error: error instanceof Error ? error.message : String(error) })
+        if (shareStatus !== "draft_created") {
+          shareStatus = "failed"
+        }
+      }
+    }
+  }
+
+  const sharedAt = nowIso()
+  const recipientsJson = JSON.stringify(shareResults)
+  db.prepare(`
+    UPDATE meeting_sessions
+    SET share_status = ?, shared_at = ?, shared_recipients_json = ?, updated_at = ?
+    WHERE id = ? AND user_id = ?
+  `).run(shareStatus, sharedAt, recipientsJson, sharedAt, sessionId, userId)
+
+  if (postgresPrimaryEnabled()) {
+    try {
+      await queryPostgres(`
+        UPDATE meeting_sessions
+        SET share_status = $1, shared_at = $2, shared_recipients_json = $3, updated_at = $4
+        WHERE id = $5 AND user_id = $6
+      `, [shareStatus, sharedAt, recipientsJson, sharedAt, sessionId, userId])
+    } catch {}
+  }
+
+  await createNotificationRuntime(userId, {
+    title: `Recap ${shareStatus === 'draft_created' ? 'preparato' : 'aggiornato'}`,
+    body: `${session.title}: ${recipients.length} destinatari gestiti dal notetaker.`,
+    link: "/notetaker",
+  })
+
+  return {
+    session: await getMeetingSessionRuntime(userId, sessionId),
+    shareResults,
+    subject,
+    content,
+    template: recapTemplate,
+  }
+}
+
+async function maybeAutoShareMeetingSessionRuntime(userId, session) {
+  if (!session) {
+    return session
+  }
+
+  const account = session.connected_account_id
+    ? await findConnectedAccountByIdRuntime(session.connected_account_id)
+    : null
+  const notetakerSettings = account?.workspace_id
+    ? await getScopedSettingRuntime(account.workspace_id, "notetaker", defaultNotetaker)
+    : await getSettingRuntime("notetaker", defaultNotetaker)
+
+  if (!notetakerSettings.autoShareRecaps) {
+    return session
+  }
+
+  const recipients = resolveAutoMeetingShareRecipients(session, notetakerSettings)
+  if (!recipients.length) {
+    return session
+  }
+
+  try {
+    const result = await shareMeetingSessionRuntime(userId, session.id, {
+      recipients,
+      includeOrganizer: false,
+      note: "Recap preparato automaticamente dal notetaker.",
+      template: notetakerSettings.recapTemplate || 'standard',
+    })
+    return result.session || session
+  } catch {
+    return session
   }
 }
 
@@ -3591,33 +4443,38 @@ export async function createMeetingUploadSession(userId, payload = {}) {
     buffer: audioBuffer,
   });
 
-  const transcription = await transcribeAudioBuffer({
-    audioBuffer,
-    mimeType: payload.sourceFileType || "application/octet-stream",
-    language: payload.language || defaultNotetaker.language,
-  });
+  try {
+    const transcription = await transcribeAudioBuffer({
+      audioBuffer,
+      mimeType: payload.sourceFileType || "application/octet-stream",
+      language: payload.language || defaultNotetaker.language,
+    });
 
-  if (!transcription.transcript) {
-    const error = new Error("Deepgram returned an empty transcript");
-    error.status = 422;
+    if (!transcription.transcript) {
+      const error = new Error("Deepgram returned an empty transcript");
+      error.status = 422;
+      throw error;
+    }
+
+    return createMeetingSession(userId, {
+      sourceType: "upload",
+      calendarEventId: payload.calendarEventId || "",
+      title: payload.title || payload.sourceFileName || "Registrazione caricata",
+      meetingUrl: payload.meetingUrl || "",
+      transcriptText: transcription.transcript,
+      language: payload.language || defaultNotetaker.language,
+      sourceFileName: payload.sourceFileName || "",
+      sourceFileType: payload.sourceFileType || "",
+      sourceFileSize: Number(payload.sourceFileSize || audioBuffer.length || 0),
+      sourceObjectKey: storedObject.objectKey,
+      sourceStorageProvider: storedObject.provider,
+      transcriptionProvider: "deepgram",
+      utterances: transcription.utterances || [],
+    });
+  } catch (error) {
+    await deleteStoredObject(storedObject.objectKey);
     throw error;
   }
-
-  return createMeetingSession(userId, {
-    sourceType: "upload",
-    calendarEventId: payload.calendarEventId || "",
-    title: payload.title || payload.sourceFileName || "Registrazione caricata",
-    meetingUrl: payload.meetingUrl || "",
-    transcriptText: transcription.transcript,
-    language: payload.language || defaultNotetaker.language,
-    sourceFileName: payload.sourceFileName || "",
-    sourceFileType: payload.sourceFileType || "",
-    sourceFileSize: Number(payload.sourceFileSize || audioBuffer.length || 0),
-    sourceObjectKey: storedObject.objectKey,
-    sourceStorageProvider: storedObject.provider,
-    transcriptionProvider: "deepgram",
-    utterances: transcription.utterances || [],
-  });
 }
 
 export async function createMeetingUploadSessionRuntime(userId, payload = {}) {
@@ -3639,33 +4496,38 @@ export async function createMeetingUploadSessionRuntime(userId, payload = {}) {
     buffer: audioBuffer,
   });
 
-  const transcription = await transcribeAudioBuffer({
-    audioBuffer,
-    mimeType: payload.sourceFileType || "application/octet-stream",
-    language: payload.language || defaultNotetaker.language,
-  });
+  try {
+    const transcription = await transcribeAudioBuffer({
+      audioBuffer,
+      mimeType: payload.sourceFileType || "application/octet-stream",
+      language: payload.language || defaultNotetaker.language,
+    });
 
-  if (!transcription.transcript) {
-    const error = new Error("Deepgram returned an empty transcript");
-    error.status = 422;
+    if (!transcription.transcript) {
+      const error = new Error("Deepgram returned an empty transcript");
+      error.status = 422;
+      throw error;
+    }
+
+    return createMeetingSessionRuntime(userId, {
+      sourceType: "upload",
+      calendarEventId: payload.calendarEventId || "",
+      title: payload.title || payload.sourceFileName || "Registrazione caricata",
+      meetingUrl: payload.meetingUrl || "",
+      transcriptText: transcription.transcript,
+      language: payload.language || defaultNotetaker.language,
+      sourceFileName: payload.sourceFileName || "",
+      sourceFileType: payload.sourceFileType || "",
+      sourceFileSize: Number(payload.sourceFileSize || audioBuffer.length || 0),
+      sourceObjectKey: storedObject.objectKey,
+      sourceStorageProvider: storedObject.provider,
+      transcriptionProvider: "deepgram",
+      utterances: transcription.utterances || [],
+    });
+  } catch (error) {
+    await deleteStoredObject(storedObject.objectKey);
     throw error;
   }
-
-  return createMeetingSessionRuntime(userId, {
-    sourceType: "upload",
-    calendarEventId: payload.calendarEventId || "",
-    title: payload.title || payload.sourceFileName || "Registrazione caricata",
-    meetingUrl: payload.meetingUrl || "",
-    transcriptText: transcription.transcript,
-    language: payload.language || defaultNotetaker.language,
-    sourceFileName: payload.sourceFileName || "",
-    sourceFileType: payload.sourceFileType || "",
-    sourceFileSize: Number(payload.sourceFileSize || audioBuffer.length || 0),
-    sourceObjectKey: storedObject.objectKey,
-    sourceStorageProvider: storedObject.provider,
-    transcriptionProvider: "deepgram",
-    utterances: transcription.utterances || [],
-  });
 }
 
 function threadSnippet(content = "") {
@@ -4344,7 +5206,10 @@ export async function syncMailbox(userId, accountId = null, options = {}) {
     processedMessages += result.processedMessages;
   }
 
-  const categorization = await categorizeMailbox(userId, accountId ? { accountId } : {});
+  const categorization = await categorizeMailbox(userId, {
+    ...(accountId ? { accountId } : {}),
+    workspaceId: accounts[0]?.workspace_id || "",
+  });
 
   return {
     syncedAccounts: accounts.length,
@@ -4359,18 +5224,37 @@ export async function syncMailboxRuntime(userId, accountId = null, options = {})
     ? (await listConnectedAccountsRuntime(userId)).filter((account) => account.id === accountId)
     : await listConnectedAccountsRuntime(userId);
 
+  const supportedAccounts = accounts.filter((account) => ["google", "microsoft"].includes(account?.provider) && accountCapabilities(account).includes("mail"));
+  if (accountId && supportedAccounts.length === 0) {
+    const error = new Error("Mail sync not supported for this provider");
+    error.status = 400;
+    throw error;
+  }
+
+  if (supportedAccounts.length === 0) {
+    return {
+      syncedAccounts: 0,
+      processedThreads: 0,
+      processedMessages: 0,
+      categorizedThreads: 0,
+    };
+  }
+
   let processedThreads = 0;
   let processedMessages = 0;
 
-  for (const account of accounts) {
+  for (const account of supportedAccounts) {
     const item = await syncAccountMailbox(userId, account, options);
     processedThreads += item.processedThreads;
     processedMessages += item.processedMessages;
   }
 
-  const categorization = await categorizeMailboxRuntime(userId, accountId ? { accountId } : {});
+  const categorization = await categorizeMailboxRuntime(userId, {
+    ...(accountId ? { accountId } : {}),
+    workspaceId: supportedAccounts[0]?.workspace_id || "",
+  });
   const result = {
-    syncedAccounts: accounts.length,
+    syncedAccounts: supportedAccounts.length,
     processedThreads,
     processedMessages,
     categorizedThreads: categorization.processedThreads,
@@ -4386,6 +5270,10 @@ export async function maintainWebhookSubscriptions() {
   let failedSubscriptions = 0;
 
   for (const account of accounts) {
+    if (!["google", "microsoft"].includes(account.provider) || !accountCapabilities(account).includes("mail")) {
+      continue;
+    }
+
     if (isDemoConnectedAccount(account)) {
       continue;
     }
@@ -4426,7 +5314,7 @@ export async function maintainWebhookSubscriptions() {
   };
 }
 
-export function listMailThreads(userId) {
+export async function listMailThreads(userId, { workspaceId = "" } = {}) {
   const rows = db.prepare(`
     SELECT
       mt.*,
@@ -4443,19 +5331,39 @@ export function listMailThreads(userId) {
     ORDER BY mt.last_message_at DESC
   `).all(userId);
 
+  const [emailRules, categoryOverrides] = workspaceId
+    ? await Promise.all([
+      listEmailRulesRuntime(workspaceId),
+      listThreadCategoryOverridesRuntime(workspaceId),
+    ])
+    : [defaultEmailRules, {}];
+
   return rows.map((thread) => {
+    const resolved = applyThreadClassificationPolicies(thread, {
+      category: thread.category,
+      topicLabel: thread.topic_label || "",
+      inboxAction: thread.inbox_action || "keep_default",
+      reason: thread.category_reason || "",
+      confidence: Number(thread.confidence || 0.7),
+    }, emailRules, categoryOverrides);
     const eligibility = evaluateDraftEligibility(thread, thread);
     return {
       ...thread,
+      category: resolved.category,
+      inbox_action: resolved.inboxAction,
+      category_reason: resolved.reason,
+      manual_override: Boolean(resolved.manualOverride),
+      matched_rule_id: resolved.matchedRuleId || "",
+      matched_rule_name: resolved.matchedRuleName || "",
       draft_eligible: eligibility.eligible,
       draft_eligibility_reason: eligibility.reason,
     };
   });
 }
 
-export async function listMailThreadsRuntime(userId) {
+export async function listMailThreadsRuntime(userId, { workspaceId = "" } = {}) {
   if (!postgresPrimaryEnabled()) {
-    return listMailThreads(userId);
+    return listMailThreads(userId, { workspaceId });
   }
 
   try {
@@ -4475,17 +5383,108 @@ export async function listMailThreadsRuntime(userId) {
       ORDER BY mt.last_message_at DESC
     `, [userId]);
 
+    const [emailRules, categoryOverrides] = workspaceId
+      ? await Promise.all([
+        listEmailRulesRuntime(workspaceId),
+        listThreadCategoryOverridesRuntime(workspaceId),
+      ])
+      : [defaultEmailRules, {}];
+
     return rows.map((thread) => {
+      const resolved = applyThreadClassificationPolicies(thread, {
+        category: thread.category,
+        topicLabel: thread.topic_label || "",
+        inboxAction: thread.inbox_action || "keep_default",
+        reason: thread.category_reason || "",
+        confidence: Number(thread.confidence || 0.7),
+      }, emailRules, categoryOverrides);
       const eligibility = evaluateDraftEligibility(thread, thread);
       return {
         ...thread,
+        category: resolved.category,
+        inbox_action: resolved.inboxAction,
+        category_reason: resolved.reason,
+        manual_override: Boolean(resolved.manualOverride),
+        matched_rule_id: resolved.matchedRuleId || "",
+        matched_rule_name: resolved.matchedRuleName || "",
         draft_eligible: eligibility.eligible,
         draft_eligibility_reason: eligibility.reason,
       };
     });
   } catch {
-    return listMailThreads(userId);
+    return listMailThreads(userId, { workspaceId });
   }
+}
+
+export async function listAwaitingReplyThreadsRuntime(userId, { workspaceId = "" } = {}) {
+  const draftsSettings = workspaceId
+    ? await getScopedSettingRuntime(workspaceId, "drafts", defaultDrafts)
+    : await getSettingRuntime("drafts", defaultDrafts);
+  if (!draftsSettings.enableFollowUps) {
+    return [];
+  }
+
+  const threads = await listMailThreadsRuntime(userId, { workspaceId });
+  const threadIds = threads.map((thread) => thread.id);
+  const messageRows = listSqliteRowsByValues("mail_messages", "thread_id", threadIds);
+  const messagesByThread = new Map();
+
+  for (const message of messageRows) {
+    const bucket = messagesByThread.get(message.thread_id) || [];
+    bucket.push(message);
+    messagesByThread.set(message.thread_id, bucket);
+  }
+
+  const followUpDays = Math.max(1, Number(draftsSettings.followUpDays || 3));
+  const followUpMs = followUpDays * 24 * 60 * 60 * 1000;
+
+  return threads
+    .map((thread) => {
+      const messages = (messagesByThread.get(thread.id) || []).sort(
+        (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime(),
+      );
+      const latestOutgoing = messages.find((message) => message.role === "outgoing");
+      if (!latestOutgoing) {
+        return null;
+      }
+
+      const outgoingTime = new Date(latestOutgoing.created_at).getTime();
+      if (!Number.isFinite(outgoingTime)) {
+        return null;
+      }
+
+      const latestIncomingAfterReply = messages.find((message) => {
+        if (message.role !== "incoming") {
+          return false;
+        }
+
+        const incomingTime = new Date(message.created_at).getTime();
+        return Number.isFinite(incomingTime) && incomingTime > outgoingTime;
+      });
+      if (latestIncomingAfterReply) {
+        return null;
+      }
+
+      if (Date.now() - outgoingTime < followUpMs) {
+        return null;
+      }
+
+      return {
+        id: thread.id,
+        subject: thread.subject,
+        from_name: thread.from_name,
+        from_email: thread.from_email,
+        account_email: thread.account_email || "",
+        category: thread.category,
+        last_message_at: thread.last_message_at,
+        awaiting_reply_since: latestOutgoing.created_at,
+        follow_up_due_at: new Date(outgoingTime + followUpMs).toISOString(),
+        waiting_days: Math.max(1, Math.floor((Date.now() - outgoingTime) / (24 * 60 * 60 * 1000))),
+        snippet: thread.snippet,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(left.follow_up_due_at).getTime() - new Date(right.follow_up_due_at).getTime());
 }
 
 function listThreadsForCategorization(userId, { accountId = null, threadId = null } = {}) {
@@ -4542,9 +5541,13 @@ async function listThreadsForCategorizationRuntime(userId, { accountId = null, t
   }
 }
 
-export async function categorizeMailbox(userId, { accountId = null, threadId = null } = {}) {
+export async function categorizeMailbox(userId, { accountId = null, threadId = null, workspaceId = "" } = {}) {
   const threads = listThreadsForCategorization(userId, { accountId, threadId });
-  const settings = getSetting("categorization", defaultCategorization);
+  const settings = workspaceId
+    ? await getScopedSettingRuntime(workspaceId, "categorization", defaultCategorization)
+    : getSetting("categorization", defaultCategorization);
+  const emailRules = workspaceId ? await listEmailRulesRuntime(workspaceId) : defaultEmailRules;
+  const categoryOverrides = workspaceId ? await listThreadCategoryOverridesRuntime(workspaceId) : {};
   const counts = {};
   const topics = {};
   let updatedThreads = 0;
@@ -4557,8 +5560,9 @@ export async function categorizeMailbox(userId, { accountId = null, threadId = n
       continue;
     }
     const existing = db.prepare("SELECT * FROM thread_classifications WHERE thread_id = ?").get(thread.id);
+    const resolved = applyThreadClassificationPolicies(thread, classification, emailRules, categoryOverrides);
 
-    db.prepare("UPDATE mail_threads SET category = ? WHERE id = ?").run(classification.category, thread.id);
+    db.prepare("UPDATE mail_threads SET category = ? WHERE id = ?").run(resolved.category, thread.id);
 
     if (existing) {
       db.prepare(`
@@ -4566,11 +5570,11 @@ export async function categorizeMailbox(userId, { accountId = null, threadId = n
         SET category = ?, topic_label = ?, inbox_action = ?, reason = ?, confidence = ?, updated_at = ?
         WHERE thread_id = ?
       `).run(
-        classification.category,
-        classification.topicLabel,
-        classification.inboxAction,
-        classification.reason,
-        classification.confidence,
+        resolved.category,
+        resolved.topicLabel,
+        resolved.inboxAction,
+        resolved.reason,
+        resolved.confidence,
         now,
         thread.id,
       );
@@ -4582,19 +5586,19 @@ export async function categorizeMailbox(userId, { accountId = null, threadId = n
       `).run(
         thread.id,
         userId,
-        classification.category,
-        classification.topicLabel,
-        classification.inboxAction,
-        classification.reason,
-        classification.confidence,
+        resolved.category,
+        resolved.topicLabel,
+        resolved.inboxAction,
+        resolved.reason,
+        resolved.confidence,
         now,
       );
     }
 
     updatedThreads += 1;
-    counts[classification.category] = (counts[classification.category] || 0) + 1;
-    if (classification.topicLabel) {
-      topics[classification.topicLabel] = (topics[classification.topicLabel] || 0) + 1;
+    counts[resolved.category] = (counts[resolved.category] || 0) + 1;
+    if (resolved.topicLabel) {
+      topics[resolved.topicLabel] = (topics[resolved.topicLabel] || 0) + 1;
     }
   }
 
@@ -4612,13 +5616,17 @@ export async function categorizeMailbox(userId, { accountId = null, threadId = n
   };
 }
 
-export async function categorizeMailboxRuntime(userId, { accountId = null, threadId = null } = {}) {
+export async function categorizeMailboxRuntime(userId, { accountId = null, threadId = null, workspaceId = "" } = {}) {
   if (!postgresPrimaryEnabled()) {
-    return categorizeMailbox(userId, { accountId, threadId });
+    return categorizeMailbox(userId, { accountId, threadId, workspaceId });
   }
 
   const threads = await listThreadsForCategorizationRuntime(userId, { accountId, threadId });
-  const settings = await getSettingRuntime("categorization", defaultCategorization);
+  const settings = workspaceId
+    ? await getScopedSettingRuntime(workspaceId, "categorization", defaultCategorization)
+    : await getSettingRuntime("categorization", defaultCategorization);
+  const emailRules = workspaceId ? await listEmailRulesRuntime(workspaceId) : defaultEmailRules;
+  const categoryOverrides = workspaceId ? await listThreadCategoryOverridesRuntime(workspaceId) : {};
   const counts = {};
   const topics = {};
   let updatedThreads = 0;
@@ -4631,27 +5639,28 @@ export async function categorizeMailboxRuntime(userId, { accountId = null, threa
       if (!classification) {
         continue;
       }
+      const resolved = applyThreadClassificationPolicies(thread, classification, emailRules, categoryOverrides);
 
       await postgres.query("UPDATE mail_threads SET category = $1 WHERE id = $2", [
-        classification.category,
+        resolved.category,
         thread.id,
       ]);
 
       await upsertPostgresRecord(postgres, "thread_classifications", {
         thread_id: thread.id,
         user_id: userId,
-        category: classification.category,
-        topic_label: classification.topicLabel,
-        inbox_action: classification.inboxAction,
-        reason: classification.reason,
-        confidence: classification.confidence,
+        category: resolved.category,
+        topic_label: resolved.topicLabel,
+        inbox_action: resolved.inboxAction,
+        reason: resolved.reason,
+        confidence: resolved.confidence,
         updated_at: now,
       }, ["thread_id"]);
 
       updatedThreads += 1;
-      counts[classification.category] = (counts[classification.category] || 0) + 1;
-      if (classification.topicLabel) {
-        topics[classification.topicLabel] = (topics[classification.topicLabel] || 0) + 1;
+      counts[resolved.category] = (counts[resolved.category] || 0) + 1;
+      if (resolved.topicLabel) {
+        topics[resolved.topicLabel] = (topics[resolved.topicLabel] || 0) + 1;
       }
     }
 
@@ -4738,6 +5747,9 @@ function fallbackDraftContent(thread, account, preferences) {
   const signature = preferences.includeSignature && preferences.defaultSignature
     ? `\n\n${preferences.defaultSignature}`
     : "";
+  const schedulingBlock = preferences.includeSchedulingLink && preferences.schedulingSignature
+    ? `\n\n${preferences.schedulingSignature.replaceAll("{{scheduling_link}}", preferences.schedulingLink || "[link pianificazione]")}`
+    : "";
 
   return [
     `Ciao ${thread.from_name.split(" ")[0]},`,
@@ -4747,8 +5759,128 @@ function fallbackDraftContent(thread, account, preferences) {
     "",
     "A presto,",
     account.display_name || account.email || "MailMind",
-    signature,
-  ].join("\n");
+  ].join("\n") + schedulingBlock + signature;
+}
+
+function fallbackDraftVariants(thread, account, preferences) {
+  const recipientName = String(thread.from_name || thread.from_email || "").split(" ")[0] || "team"
+  const signature = preferences.includeSignature && preferences.defaultSignature
+    ? `\n\n${preferences.defaultSignature}`
+    : ""
+
+  const variants = [
+    {
+      label: "Diretta",
+      description: "Conferma ricezione e propone il prossimo passo in modo conciso.",
+      content: [
+        `Ciao ${recipientName},`,
+        "",
+        `grazie per il messaggio su "${thread.subject}". Ho preso in carico la richiesta e ti confermo che ti aggiorno a breve con il prossimo passo operativo.`,
+        "",
+        "A presto,",
+        account.display_name || account.email || "MailMind",
+      ].join("\n") + signature,
+    },
+    {
+      label: "Collaborativa",
+      description: "Tono piu' aperto, utile quando vuoi mantenere dialogo e disponibilita'.",
+      content: [
+        `Ciao ${recipientName},`,
+        "",
+        `grazie per avermi scritto. Ho visto il thread "${thread.subject}" e sono allineato sul contesto: se per te va bene, procedo con una risposta operativa o con i dettagli mancanti per chiudere il punto rapidamente.`,
+        "",
+        "Resto volentieri a disposizione,",
+        account.display_name || account.email || "MailMind",
+      ].join("\n") + signature,
+    },
+    {
+      label: "Formale",
+      description: "Versione piu' istituzionale, adatta a clienti o stakeholder esterni.",
+      content: [
+        `Gentile ${thread.from_name || recipientName},`,
+        "",
+        `La ringrazio per il messaggio relativo a "${thread.subject}". Confermo la presa in carico e Le inviero' un aggiornamento puntuale con il prossimo passo da parte mia nel piu' breve tempo possibile.`,
+        "",
+        "Cordiali saluti,",
+        account.display_name || account.email || "MailMind",
+      ].join("\n") + signature,
+    },
+  ]
+
+  return variants.slice(0, Math.max(1, Number(preferences.draftVariants || 3)))
+}
+
+function cleanVariantBody(value = "") {
+  return String(value || "").trim().replace(/^```\w*\s*/i, "").replace(/\s*```$/i, "").trim()
+}
+
+async function generateDraftVariants(thread, account, preferences, messageRows = null) {
+  const fallback = fallbackDraftVariants(thread, account, preferences)
+  if (!hasGeminiCredentials()) {
+    return fallback
+  }
+
+  const messages = (messageRows || listThreadMessages(thread.id))
+    .slice(-8)
+    .map((message) => [
+      `[${message.role} | ${message.sender_name || message.sender_email || "sconosciuto"} | ${message.created_at}]`,
+      trimPromptChunk(message.content, 1200),
+    ].join("\n"))
+    .join("\n\n")
+
+  const toneLabel = preferences.customTone && preferences.customToneText
+    ? preferences.customToneText
+    : "professionale, conciso e naturale"
+  const signature = preferences.includeSignature && preferences.defaultSignature
+    ? preferences.defaultSignature.trim()
+    : ""
+  const schedulingBlock = preferences.includeSchedulingLink && preferences.schedulingSignature
+    ? preferences.schedulingSignature.replaceAll("{{scheduling_link}}", preferences.schedulingLink || "[link pianificazione]").trim()
+    : ""
+  const variantCount = Math.max(1, Math.min(3, Number(preferences.draftVariants || 3)))
+
+  const prompt = [
+    `Genera ${variantCount} varianti di risposta email in JSON.`,
+    "Restituisci un oggetto con chiave variants e array di oggetti { label, description, content }.",
+    "Le varianti devono essere tra loro diverse per taglio: una piu diretta, una piu collaborativa, una piu formale se richiesta.",
+    "Non inventare fatti non presenti nel thread.",
+    signature ? "Non includere la firma nel contenuto: verra aggiunta dal sistema." : "Ogni variante puo chiudersi con un saluto naturale.",
+    schedulingBlock ? `Quando opportuno, includi questa chiusura di scheduling: ${schedulingBlock}` : "",
+    `Tono richiesto: ${toneLabel}`,
+    `Mittente account: ${account.display_name || account.email}`,
+    `Subject thread: ${thread.subject}`,
+    `Contatto principale: ${thread.from_name} <${thread.from_email}>`,
+    "Conversazione:",
+    messages || "(nessun messaggio disponibile)",
+  ].join("\n")
+
+  try {
+    const result = await generateJsonWithGemini({
+      model: process.env.GEMINI_DRAFT_MODEL || process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      systemInstruction: "Sei un assistente email per professionisti italiani. Restituisci solo JSON valido.",
+      prompt,
+      maxOutputTokens: 1200,
+    })
+
+    const variants = Array.isArray(result.json?.variants)
+      ? result.json.variants.map((variant, index) => ({
+        label: String(variant?.label || fallback[index]?.label || `Variante ${index + 1}`).trim(),
+        description: String(variant?.description || fallback[index]?.description || "").trim(),
+        content: cleanVariantBody(variant?.content || fallback[index]?.content || ""),
+      })).filter((variant) => variant.content)
+      : []
+
+    if (!variants.length) {
+      return fallback
+    }
+
+    return variants.slice(0, variantCount).map((variant) => ({
+      ...variant,
+      content: [variant.content, schedulingBlock, signature].filter(Boolean).join('\n\n'),
+    }))
+  } catch {
+    return fallback
+  }
 }
 
 async function generateDraftContent(thread, account, preferences, messageRows = null) {
@@ -4771,6 +5903,9 @@ async function generateDraftContent(thread, account, preferences, messageRows = 
   const signature = preferences.includeSignature && preferences.defaultSignature
     ? preferences.defaultSignature.trim()
     : "";
+  const schedulingBlock = preferences.includeSchedulingLink && preferences.schedulingSignature
+    ? preferences.schedulingSignature.replaceAll("{{scheduling_link}}", preferences.schedulingLink || "[link pianificazione]").trim()
+    : "";
 
   const prompt = [
     "Scrivi il corpo di una email di risposta.",
@@ -4779,6 +5914,7 @@ async function generateDraftContent(thread, account, preferences, messageRows = 
     "Se mancano dettagli, usa una risposta prudente che confermi ricezione e proponga il passo successivo.",
     "Mantieni il tono richiesto.",
     signature ? "Non aggiungere la firma: verra appesa dal sistema." : "Chiudi con un saluto naturale.",
+    schedulingBlock ? `Se la conversazione riguarda appuntamenti o disponibilita, integra anche questa nota: ${schedulingBlock}` : "",
     "",
     `Tono richiesto: ${toneLabel}`,
     `Mittente account: ${account.display_name || account.email}`,
@@ -4803,7 +5939,7 @@ async function generateDraftContent(thread, account, preferences, messageRows = 
       return fallback;
     }
 
-    return signature ? `${body}\n\n${signature}` : body;
+    return [body, schedulingBlock, signature].filter(Boolean).join("\n\n");
   } catch {
     return fallback;
   }
@@ -5117,13 +6253,15 @@ export async function createDraftForThread(userId, threadId, options = {}) {
     throw error;
   }
 
-  const preferences = getSetting("drafts", defaultDrafts);
+  const preferences = account.workspace_id
+    ? await getScopedSettingRuntime(account.workspace_id, "drafts", defaultDrafts)
+    : getSetting("drafts", defaultDrafts);
   const existing = db.prepare("SELECT * FROM draft_records WHERE thread_id = ? AND user_id = ?").get(threadId, userId);
   const now = nowIso();
   const toneLabel = preferences.customTone && preferences.customToneText
     ? preferences.customToneText
     : "Tono professionale e conciso";
-  const content = await generateDraftContent(thread, account, preferences);
+  const content = options.customContent || await generateDraftContent(thread, account, preferences);
 
   if (existing) {
     db.prepare(`
@@ -5200,7 +6338,9 @@ export async function createDraftForThreadRuntime(userId, threadId, options = {}
     throw error;
   }
 
-  const preferences = await getSettingRuntime("drafts", defaultDrafts);
+  const preferences = account.workspace_id
+    ? await getScopedSettingRuntime(account.workspace_id, "drafts", defaultDrafts)
+    : await getSettingRuntime("drafts", defaultDrafts);
   const existing = await queryPostgresRow(
     "SELECT * FROM draft_records WHERE thread_id = $1 AND user_id = $2",
     [threadId, userId],
@@ -5210,7 +6350,7 @@ export async function createDraftForThreadRuntime(userId, threadId, options = {}
     ? preferences.customToneText
     : "Tono professionale e conciso";
   const messages = await listThreadMessagesRuntime(thread.id);
-  const content = await generateDraftContent(thread, account, preferences, messages);
+  const content = options.customContent || await generateDraftContent(thread, account, preferences, messages);
 
   if (existing) {
     await queryPostgres(`
@@ -5258,6 +6398,42 @@ export async function createDraftForThreadRuntime(userId, threadId, options = {}
     return await writeDraftToProviderRuntime(userId, created.id);
   } catch {
     return getDraftRecordByIdRuntime(userId, created.id);
+  }
+}
+
+export async function generateDraftOptionsForThreadRuntime(userId, threadId, { workspaceId = "" } = {}) {
+  const thread = await findMailThreadRuntime(userId, threadId)
+  if (!thread) {
+    return null
+  }
+
+  const account = await findConnectedAccountByIdRuntime(thread.connected_account_id)
+  if (!account) {
+    return null
+  }
+
+  const classification = await getThreadClassificationRuntime(thread.id)
+  const eligibility = evaluateDraftEligibility(thread, classification)
+  if (!eligibility.eligible) {
+    const error = new Error(eligibility.reason)
+    error.status = 400
+    throw error
+  }
+
+  const preferences = workspaceId
+    ? await getScopedSettingRuntime(workspaceId, "drafts", defaultDrafts)
+    : await getSettingRuntime("drafts", defaultDrafts)
+  const messages = await listThreadMessagesRuntime(thread.id)
+  const variants = await generateDraftVariants(thread, account, preferences, messages)
+
+  return {
+    thread: {
+      id: thread.id,
+      subject: thread.subject,
+      from_name: thread.from_name,
+      from_email: thread.from_email,
+    },
+    variants,
   }
 }
 

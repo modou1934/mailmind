@@ -8,6 +8,7 @@
     "dev:server": "node --watch --env-file=.env server/index.js",
     "server": "node --env-file=.env server/index.js",
     "build": "vite build",
+    "test": "node --test --test-concurrency=1",
     "lint": "eslint . --quiet",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc -p ./jsconfig.json",

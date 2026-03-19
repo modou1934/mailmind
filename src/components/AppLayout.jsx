@@ -1,12 +1,13 @@
 import { Link, useLocation, Outlet, Navigate } from 'react-router-dom';
 import { useState } from 'react';
 import { 
-  Home, Tag, FileText, Mic, Calendar, MessageSquare, Settings, 
+  Home, Tag, FileText, Mic, Calendar, MessageSquare, Settings, Clock3,
   Bell, ChevronDown, X, ArrowUpRight
 } from 'lucide-react';
 
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: Home },
+  { path: '/awaiting-reply', label: 'Awaiting Reply', icon: Clock3 },
   { path: '/categorizzazione', label: 'Categorizzazione', icon: Tag },
   { path: '/bozze', label: 'Bozze', icon: FileText },
   { path: '/notetaker', label: 'Notetaker', icon: Mic },

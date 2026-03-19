@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, X, Users, UserPlus, Layers3 } from "lucide-react";
 import { api } from "@/api/privateApiClient";
 
 export default function Persone() {
@@ -77,6 +77,24 @@ export default function Persone() {
       </div>
 
       <div className="px-8 py-6 max-w-2xl">
+        <div className="grid gap-4 md:grid-cols-3 mb-5">
+          <div className="rounded-xl border border-gray-100 bg-white p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><Users className="w-3.5 h-3.5" /> Membri</div>
+            <div className="mt-2 text-2xl font-semibold text-gray-900">{members.length}</div>
+            <div className="text-xs text-gray-500">Persone gia' attive nel workspace.</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-white p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><Layers3 className="w-3.5 h-3.5" /> Team</div>
+            <div className="mt-2 text-2xl font-semibold text-gray-900">{teams.length}</div>
+            <div className="text-xs text-gray-500">Gruppi interni per accesso e pianificazione.</div>
+          </div>
+          <div className="rounded-xl border border-gray-100 bg-white p-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><UserPlus className="w-3.5 h-3.5" /> Inviti</div>
+            <div className="mt-2 text-2xl font-semibold text-gray-900">{invites.length}</div>
+            <div className="text-xs text-gray-500">Inviti in sospeso da convertire in membri.</div>
+          </div>
+        </div>
+
         {tab === "members" && (
           <div>
             <div className="flex items-center justify-between mb-3">

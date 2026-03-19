@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHmac, timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
 import {
   addConversationMessageRuntime,
   createAuditLog,
@@ -7,6 +7,7 @@ import {
   createInviteRuntime,
   createMeetingSessionRuntime,
   createMeetingUploadSessionRuntime,
+  createNotificationRuntime,
   categorizeMailboxRuntime,
   createDraftForThreadRuntime,
   createOauthStateRuntime,
@@ -19,30 +20,38 @@ import {
   findConnectedAccountByProviderEmailRuntime,
   findConnectedAccountByWebhookSubscriptionIdRuntime,
   generateDraftsForPendingThreadsRuntime,
+  generateDraftOptionsForThreadRuntime,
+  getOauthStateRuntime,
   getBillingSummaryRuntime,
   getDashboardRuntime,
   getOrCreateDevUserRuntime,
+  getScopedSettingRuntime,
   getSessionRuntime,
-  getSettingRuntime,
   getWorkspaceSummaryRuntime,
   getWebhookSubscriptionRuntime,
+  findConversationForUserRuntime,
   listMailSyncStatesRuntime,
   listSyncRunsRuntime,
   listWebhookSubscriptionsRuntime,
   listDraftRecordsRuntime,
   listMailThreadsRuntime,
+  listAwaitingReplyThreadsRuntime,
   listConnectedAccountsRuntime,
   listConversationMessagesRuntime,
   listConversationsRuntime,
   listCalendarEventsRuntime,
   listInvitesRuntime,
   listMeetingSessionsRuntime,
+  listMeetingSessionChatMessagesRuntime,
   listTeamsRuntime,
   listWorkspaceMembersRuntime,
   maintainWebhookSubscriptions,
   processMeetingSessionRuntime,
   pushDraftRecordRuntime,
-  setSettingRuntime,
+  askMeetingSessionQuestionRuntime,
+  shareMeetingSessionRuntime,
+  setThreadCategoryOverrideRuntime,
+  setScopedSettingRuntime,
   syncCalendarRuntime,
   syncMailboxRuntime,
   upsertConnectedAccountRuntime,
@@ -51,9 +60,10 @@ import {
 } from "./db.js";
 import { encryptString } from "./crypto.js";
 import { generateTextWithGemini, getGeminiRuntimeStatus, hasGeminiCredentials } from "./gemini.js";
-import { buildProviderAuthUrl, exchangeOAuthCode, fetchProviderProfile, hasProviderCredentials } from "./oauth.js";
-import { clearCookie, corsHeaders, empty, json, parseCookies, readJson, setCookie, text } from "./http.js";
+import { buildProviderAuthUrl, exchangeOAuthCode, fetchProviderProfile, hasProviderCredentials, normalizeProviderKey, providerCapabilities } from "./oauth.js";
+import { clearCookie, corsHeaders, empty, json, parseCookies, readBodyText, readJson, setCookie, text } from "./http.js";
 import { getPostgresRuntimeStatus } from "./postgres.js";
+import { createStripeCheckoutSession, hasStripeCredentials, stripePlans, verifyStripeWebhookSignature } from "./stripe.js";
 import { getStorageRuntimeStatus } from "./storage.js";
 import { hasDeepgramCredentials } from "./transcription.js";
 
@@ -62,6 +72,7 @@ const CSRF_COOKIE = "mailmind_csrf";
 const PORT = Number(process.env.PORT || 8787);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 const APP_ENV = process.env.APP_ENV || "development";
+const IS_PRODUCTION = APP_ENV === "production";
 const PRIVATE_AUTO_LOGIN = process.env.PRIVATE_AUTO_LOGIN === "true";
 const AUTO_LOGIN_ENABLED = APP_ENV === "development" && PRIVATE_AUTO_LOGIN;
 const WEBHOOK_MAINTENANCE_INTERVAL_MS = Number(process.env.WEBHOOK_MAINTENANCE_INTERVAL_MS || 300000);
@@ -74,6 +85,17 @@ const STALE_SYNC_WINDOW_MS = 1000 * 60 * 60 * 24;
 const GOOGLE_WATCH_ATTENTION_WINDOW_MS = 1000 * 60 * 60;
 const MICROSOFT_SUBSCRIPTION_ATTENTION_WINDOW_MS = 1000 * 60 * 15;
 const isSecureFrontend = FRONTEND_URL.startsWith("https://");
+const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+const GOOGLE_WEBHOOK_VERIFICATION_TOKEN = process.env.GOOGLE_WEBHOOK_VERIFICATION_TOKEN || "";
+const ALLOWED_SETTINGS_KEYS = new Set([
+  "billing",
+  "categorization",
+  "drafts",
+  "email-rules",
+  "notetaker",
+  "organization",
+  "scheduling",
+]);
 const rateLimitStore = new Map();
 
 function providerRedirectUri(provider) {
@@ -85,7 +107,64 @@ function providerRedirectUri(provider) {
     return process.env.MICROSOFT_OAUTH_REDIRECT_URI || `${FRONTEND_URL}/oauth/microsoft`;
   }
 
+  if (provider === "zoom") {
+    return process.env.ZOOM_OAUTH_REDIRECT_URI || `${FRONTEND_URL}/oauth/zoom`;
+  }
+
+  if (provider === "google-calendar") {
+    return process.env.GOOGLE_CALENDAR_OAUTH_REDIRECT_URI || process.env.GOOGLE_OAUTH_REDIRECT_URI || `${FRONTEND_URL}/oauth/google-calendar`;
+  }
+
+  if (provider === "microsoft-calendar") {
+    return process.env.MICROSOFT_CALENDAR_OAUTH_REDIRECT_URI || process.env.MICROSOFT_OAUTH_REDIRECT_URI || `${FRONTEND_URL}/oauth/microsoft-calendar`;
+  }
+
   throw new Error(`Unsupported provider: ${provider}`);
+}
+
+function verifyZoomWebhookSignature(req, rawBody = "") {
+  const secret = process.env.ZOOM_WEBHOOK_SECRET || "";
+  if (!secret) {
+    return true;
+  }
+
+  const signatureHeader = String(req.headers["x-zm-signature"] || "").trim();
+  const timestamp = String(req.headers["x-zm-request-timestamp"] || "").trim();
+  if (!signatureHeader || !timestamp || !rawBody) {
+    return false;
+  }
+
+  const message = `v0:${timestamp}:${rawBody}`;
+  const expected = `v0=${createHmac("sha256", secret).update(message).digest("hex")}`;
+  const actualBuffer = Buffer.from(signatureHeader);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function buildZoomValidationResponse(plainToken = "") {
+  const secret = process.env.ZOOM_WEBHOOK_SECRET || "";
+  return {
+    plainToken,
+    encryptedToken: createHmac("sha256", secret).update(plainToken).digest("hex"),
+  };
+}
+
+function billingSuccessUrl() {
+  return `${FRONTEND_URL}/impostazioni/fatturazione?checkout=success`;
+}
+
+function billingCancelUrl() {
+  return `${FRONTEND_URL}/impostazioni/fatturazione?checkout=cancelled`;
+}
+
+function mergeBillingSummary(current, patch) {
+  return {
+    ...current,
+    ...patch,
+  };
 }
 
 function createRouter(method, pathname) {
@@ -112,8 +191,12 @@ function createRouter(method, pathname) {
     ["POST", "/api/webhooks/google/gmail"],
     ["GET", "/api/webhooks/microsoft"],
     ["POST", "/api/webhooks/microsoft"],
+    ["POST", "/api/webhooks/zoom"],
+    ["GET", "/api/mail/awaiting-reply"],
     ["GET", "/api/mail/threads"],
+    ["POST", "/api/mail/threads/:id/relabel"],
     ["GET", "/api/drafts"],
+    ["POST", "/api/drafts/options"],
     ["POST", "/api/drafts/generate"],
     ["POST", "/api/drafts/:id/push"],
     ["DELETE", "/api/drafts/:id"],
@@ -122,9 +205,15 @@ function createRouter(method, pathname) {
     ["POST", "/api/notetaker/sessions/join"],
     ["POST", "/api/notetaker/sessions/upload"],
     ["POST", "/api/notetaker/sessions/:id/process"],
+    ["GET", "/api/notetaker/sessions/:id/chat"],
+    ["POST", "/api/notetaker/sessions/:id/chat"],
+    ["POST", "/api/notetaker/sessions/:id/share"],
     ["GET", "/api/settings/:key"],
     ["PUT", "/api/settings/:key"],
     ["GET", "/api/billing/summary"],
+    ["GET", "/api/billing/plans"],
+    ["POST", "/api/billing/checkout"],
+    ["POST", "/api/billing/webhook"],
     ["GET", "/api/chat/conversations"],
     ["POST", "/api/chat/conversations"],
     ["GET", "/api/chat/conversations/:id/messages"],
@@ -180,7 +269,7 @@ function getAllowedOrigin(req) {
 
 function requestIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
+  if (TRUST_PROXY && typeof forwarded === "string" && forwarded.trim()) {
     return forwarded.split(",")[0].trim();
   }
   return req.socket.remoteAddress || "";
@@ -191,7 +280,10 @@ function requestUserAgent(req) {
 }
 
 function isWebhookRoute(route) {
-  return route?.pattern === "/api/webhooks/google/gmail" || route?.pattern === "/api/webhooks/microsoft";
+  return route?.pattern === "/api/webhooks/google/gmail"
+    || route?.pattern === "/api/webhooks/microsoft"
+    || route?.pattern === "/api/webhooks/zoom"
+    || route?.pattern === "/api/billing/webhook";
 }
 
 function isWriteMethod(method = "GET") {
@@ -204,6 +296,47 @@ function isAllowedOrigin(origin = "") {
 
 function csrfTokenValue() {
   return randomBytes(24).toString("base64url");
+}
+
+function assertAllowedSettingsKey(key) {
+  if (ALLOWED_SETTINGS_KEYS.has(key)) {
+    return;
+  }
+
+  const error = new Error("Unsupported settings key");
+  error.status = 404;
+  throw error;
+}
+
+function assertGoogleWebhookAuthorized(url) {
+  if (!GOOGLE_WEBHOOK_VERIFICATION_TOKEN) {
+    return;
+  }
+
+  if (url.searchParams.get("token") === GOOGLE_WEBHOOK_VERIFICATION_TOKEN) {
+    return;
+  }
+
+  const error = new Error("Invalid Google webhook token");
+  error.status = 403;
+  throw error;
+}
+
+function sanitizeHealthStatus({ postgres, gemini }) {
+  return {
+    status: "ok",
+    private: true,
+    services: {
+      googleOAuthConfigured: hasProviderCredentials("google"),
+      microsoftOAuthConfigured: hasProviderCredentials("microsoft"),
+      deepgramConfigured: hasDeepgramCredentials(),
+      storageReady: Boolean(getStorageRuntimeStatus().ready),
+      postgresConfigured: Boolean(postgres.configured),
+      postgresReachable: Boolean(postgres.reachable),
+      geminiConfigured: Boolean(gemini.configured),
+      geminiAvailable: Boolean(gemini.available),
+    },
+  };
 }
 
 function ensureCsrfCookie(req, res) {
@@ -344,7 +477,7 @@ async function assistantReply(userText) {
 
 function scheduleMailboxSync(userId, accountId, options = {}) {
   setImmediate(() => {
-    syncMailbox(userId, accountId, options).catch((error) => {
+    syncMailboxRuntime(userId, accountId, options).catch((error) => {
       console.error("Webhook sync failed", {
         accountId,
         userId,
@@ -356,7 +489,7 @@ function scheduleMailboxSync(userId, accountId, options = {}) {
 
 function scheduleCalendarSync(userId, accountId, options = {}) {
   setImmediate(() => {
-    syncCalendar(userId, accountId, options).catch((error) => {
+    syncCalendarRuntime(userId, accountId, options).catch((error) => {
       console.error("Calendar sync failed", {
         accountId,
         userId,
@@ -488,6 +621,53 @@ function latestValue(values) {
 }
 
 function formatAccountDiagnostics(account, threads, drafts, syncState, subscription, latestRun) {
+  const capabilities = (() => {
+    try {
+      const parsed = JSON.parse(account.capabilities_json || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    } catch {}
+
+    if (account.provider === "google" || account.provider === "microsoft") {
+      return ["mail", "calendar"];
+    }
+
+    if (account.provider === "zoom") {
+      return ["meetings"];
+    }
+
+    return [];
+  })();
+
+  if (account.provider === "zoom") {
+    return {
+      id: account.id,
+      provider: account.provider,
+      email: account.email,
+      display_name: account.display_name,
+      connected_at: account.created_at,
+      thread_count: 0,
+      draft_count: 0,
+      last_synced_at: "",
+      last_full_sync_at: "",
+      last_delta_sync_at: "",
+      last_webhook_at: latestRun?.created_at || "",
+      last_sync_status: "healthy",
+      last_sync_error: "",
+      last_sync_run_at: latestRun?.created_at || "",
+      subscription_status: "active",
+      subscription_expires_at: "",
+      subscription_notification_url: process.env.WEBHOOK_BASE_URL ? `${process.env.WEBHOOK_BASE_URL}/api/webhooks/zoom` : "",
+      webhook_resource: "zoom.webhook",
+      sync_cursor_available: false,
+      delta_link_available: false,
+      operational_status: isDemoConnectedAccount(account) ? "demo" : "active",
+      is_demo: isDemoConnectedAccount(account),
+      capabilities,
+    };
+  }
+
   const accountThreads = threads.filter((thread) => thread.connected_account_id === account.id);
   const accountDrafts = drafts.filter((draft) => draft.connected_account_id === account.id);
   const subscriptionStatus = deriveSubscriptionStatus(account, subscription);
@@ -520,6 +700,7 @@ function formatAccountDiagnostics(account, threads, drafts, syncState, subscript
     delta_link_available: Boolean(syncState?.delta_link),
     operational_status: deriveOperationalStatus(account, syncState, subscription, latestRun),
     is_demo: isDemoConnectedAccount(account),
+    capabilities,
   };
 }
 
@@ -541,7 +722,7 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    if (route.pattern !== "/api/health" && route.pattern !== "/api/webhooks/microsoft" && route.pattern !== "/api/webhooks/google/gmail") {
+    if (route.pattern !== "/api/health" && route.pattern !== "/api/webhooks/microsoft" && route.pattern !== "/api/webhooks/google/gmail" && route.pattern !== "/api/webhooks/zoom" && route.pattern !== "/api/billing/webhook") {
       if (route.pattern.startsWith("/api/auth") || route.pattern.startsWith("/api/integrations/oauth")) {
         assertRateLimit(req, "auth", {
           windowMs: AUTH_RATE_LIMIT_WINDOW_MS,
@@ -560,18 +741,7 @@ const server = createServer(async (req, res) => {
     if (route.pattern === "/api/health") {
       const gemini = getGeminiRuntimeStatus();
       const postgres = await getPostgresRuntimeStatus();
-      json(res, 200, {
-        status: "ok",
-        private: true,
-        providers: {
-          googleOAuth: hasProviderCredentials("google"),
-          microsoftOAuth: hasProviderCredentials("microsoft"),
-          deepgram: hasDeepgramCredentials(),
-          storage: getStorageRuntimeStatus(),
-          postgres,
-          gemini,
-        },
-      }, baseCorsHeaders);
+      json(res, 200, sanitizeHealthStatus({ gemini, postgres }), baseCorsHeaders);
       return;
     }
 
@@ -612,6 +782,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/webhooks/google/gmail" && req.method === "POST") {
+      assertGoogleWebhookAuthorized(url);
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
       const encodedData = body.message?.data || "";
       if (!encodedData) {
@@ -627,7 +798,13 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const account = await findConnectedAccountByProviderEmailRuntime("google", payload.emailAddress || "");
+      const emailAddress = String(payload.emailAddress || "").trim().toLowerCase();
+      if (!emailAddress) {
+        json(res, 202, { accepted: true }, baseCorsHeaders);
+        return;
+      }
+
+      const account = await findConnectedAccountByProviderEmailRuntime("google", emailAddress);
       if (!account) {
         json(res, 202, { accepted: true }, baseCorsHeaders);
         return;
@@ -664,13 +841,56 @@ const server = createServer(async (req, res) => {
         }
 
         const subscription = await getWebhookSubscriptionRuntime(account.id);
-        if (subscription?.client_state && notification.clientState && subscription.client_state !== notification.clientState) {
+        if (subscription?.client_state && (!notification.clientState || subscription.client_state !== notification.clientState)) {
           continue;
         }
 
         scheduledAccounts.add(account.id);
         scheduleMailboxSync(account.user_id, account.id, {
           webhookAt: new Date().toISOString(),
+        });
+      }
+
+      json(res, 202, { accepted: true }, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/webhooks/zoom" && req.method === "POST") {
+      const rawBody = await readBodyText(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      let body = {};
+      if (rawBody) {
+        try {
+          body = JSON.parse(rawBody);
+        } catch {
+          json(res, 400, { error: "Invalid JSON body" }, baseCorsHeaders);
+          return;
+        }
+      }
+
+      if (body.event === "endpoint.url_validation") {
+        const plainToken = String(body.payload?.plainToken || "").trim();
+        json(res, 200, buildZoomValidationResponse(plainToken), baseCorsHeaders);
+        return;
+      }
+
+      if (!verifyZoomWebhookSignature(req, rawBody)) {
+        json(res, 403, { error: "Invalid Zoom webhook signature" }, baseCorsHeaders);
+        return;
+      }
+
+      const zoomObject = body.payload?.object || {};
+      const hostEmail = String(zoomObject.host_email || body.payload?.account_email || "").trim().toLowerCase();
+      const account = hostEmail
+        ? await findConnectedAccountByProviderEmailRuntime("zoom", hostEmail)
+        : null;
+
+      if (account) {
+        await createNotificationRuntime(account.user_id, {
+          title: `Zoom ${String(body.event || "evento").replaceAll(".", " ")}`,
+          body: zoomObject.topic
+            ? `${zoomObject.topic}${zoomObject.start_time ? ` • ${zoomObject.start_time}` : ""}`
+            : "Nuovo evento Zoom ricevuto dal webhook.",
+          link: "/notetaker",
         });
       }
 
@@ -804,14 +1024,15 @@ const server = createServer(async (req, res) => {
       });
 
       const urlToOpen = buildProviderAuthUrl(provider, { state, redirectUri });
-      json(res, 200, { url: urlToOpen }, baseCorsHeaders);
+      json(res, 200, { url: urlToOpen, state }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/integrations/oauth/:provider/callback") {
       const { provider } = route.params;
+      const baseProvider = normalizeProviderKey(provider);
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      const stateRow = await consumeOauthStateRuntime(body.state, provider);
+      const stateRow = await getOauthStateRuntime(body.state, provider);
 
       if (!stateRow) {
         createAuditLog({
@@ -826,16 +1047,31 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const tokenData = await exchangeOAuthCode(provider, {
-        code: body.code,
-        redirectUri: stateRow.redirect_uri,
-      });
-      const profile = await fetchProviderProfile(provider, tokenData.access_token);
+      await consumeOauthStateRuntime(body.state, provider);
+
+      let tokenData;
+      try {
+        tokenData = await exchangeOAuthCode(provider, {
+          code: body.code,
+          redirectUri: stateRow.redirect_uri,
+        });
+      } catch (error) {
+        json(res, 400, { error: error.message || "Failed to exchange OAuth code" }, baseCorsHeaders);
+        return;
+      }
+
+      let profile;
+      try {
+        profile = await fetchProviderProfile(provider, tokenData.access_token);
+      } catch (error) {
+        json(res, 400, { error: error.message || "Failed to fetch profile" }, baseCorsHeaders);
+        return;
+      }
 
       const account = await upsertConnectedAccountRuntime({
         workspaceId: stateRow.workspace_id,
         userId: stateRow.user_id,
-        provider,
+        provider: baseProvider,
         email: profile.email,
         displayName: profile.displayName,
         externalAccountId: profile.externalAccountId,
@@ -844,6 +1080,7 @@ const server = createServer(async (req, res) => {
         expiresAt: tokenData.expires_in
           ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
           : "",
+        capabilities: providerCapabilities(provider),
       });
 
       createAuditLog({
@@ -855,13 +1092,21 @@ const server = createServer(async (req, res) => {
         userAgent: requestUserAgent(req),
         metadata: {
           provider,
+          baseProvider,
           connectedAccountId: account.id,
         },
       });
 
-      scheduleCalendarSync(stateRow.user_id, account.id);
+      if (providerCapabilities(provider).includes("calendar")) {
+        scheduleCalendarSync(stateRow.user_id, account.id);
+      }
 
-      json(res, 200, { success: true, email: account.email }, baseCorsHeaders);
+      json(res, 200, {
+        success: true,
+        email: account.email,
+        provider: baseProvider,
+        capabilities: providerCapabilities(provider),
+      }, baseCorsHeaders);
       return;
     }
 
@@ -932,13 +1177,43 @@ const server = createServer(async (req, res) => {
       const result = await categorizeMailboxRuntime(context.user.id, {
         accountId: body.accountId || null,
         threadId: body.threadId || null,
+        workspaceId: context.workspace.id,
       });
       json(res, 200, result, baseCorsHeaders);
       return;
     }
 
+    if (route.pattern === "/api/mail/awaiting-reply" && req.method === "GET") {
+      json(res, 200, {
+        threads: await listAwaitingReplyThreadsRuntime(context.user.id, {
+          workspaceId: context.workspace.id,
+        }),
+      }, baseCorsHeaders);
+      return;
+    }
+
     if (route.pattern === "/api/mail/threads" && req.method === "GET") {
-      json(res, 200, { threads: await listMailThreadsRuntime(context.user.id) }, baseCorsHeaders);
+      json(res, 200, {
+        threads: await listMailThreadsRuntime(context.user.id, {
+          workspaceId: context.workspace.id,
+        }),
+      }, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/mail/threads/:id/relabel" && req.method === "POST") {
+      const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      const override = await setThreadCategoryOverrideRuntime(
+        context.user.id,
+        context.workspace.id,
+        route.params.id,
+        body,
+      );
+      if (!override) {
+        json(res, 404, { error: "Thread not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, { override }, baseCorsHeaders);
       return;
     }
 
@@ -947,10 +1222,25 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (route.pattern === "/api/drafts/options" && req.method === "POST") {
+      const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      const options = await generateDraftOptionsForThreadRuntime(context.user.id, body.threadId || "", {
+        workspaceId: context.workspace.id,
+      });
+      if (!options) {
+        json(res, 404, { error: "Thread not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, options, baseCorsHeaders);
+      return;
+    }
+
     if (route.pattern === "/api/drafts/generate" && req.method === "POST") {
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
       if (body.threadId) {
-        const draft = await createDraftForThreadRuntime(context.user.id, body.threadId);
+        const draft = await createDraftForThreadRuntime(context.user.id, body.threadId, {
+          customContent: body.customContent || "",
+        });
         if (!draft) {
           json(res, 404, { error: "Thread not found" }, baseCorsHeaders);
           return;
@@ -1070,20 +1360,136 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (route.pattern === "/api/notetaker/sessions/:id/chat" && req.method === "GET") {
+      const messages = await listMeetingSessionChatMessagesRuntime(context.user.id, route.params.id);
+      if (!messages) {
+        json(res, 404, { error: "Meeting session not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, { messages }, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/notetaker/sessions/:id/chat" && req.method === "POST") {
+      const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      const result = await askMeetingSessionQuestionRuntime(context.user.id, route.params.id, body.content || "");
+      if (!result) {
+        json(res, 404, { error: "Meeting session not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, result, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/notetaker/sessions/:id/share" && req.method === "POST") {
+      const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      const result = await shareMeetingSessionRuntime(context.user.id, route.params.id, body);
+      if (!result) {
+        json(res, 404, { error: "Meeting session not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, result, baseCorsHeaders);
+      return;
+    }
+
     if (route.pattern === "/api/settings/:key" && req.method === "GET") {
-      const value = await getSettingRuntime(route.params.key);
+      assertAllowedSettingsKey(route.params.key);
+      const value = await getScopedSettingRuntime(context.workspace.id, route.params.key);
       json(res, 200, { value }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/settings/:key" && req.method === "PUT") {
+      assertAllowedSettingsKey(route.params.key);
       const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
-      json(res, 200, { value: await setSettingRuntime(route.params.key, body) }, baseCorsHeaders);
+      json(res, 200, { value: await setScopedSettingRuntime(context.workspace.id, route.params.key, body) }, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/billing/plans") {
+      json(res, 200, {
+        configured: hasStripeCredentials(),
+        plans: stripePlans(),
+      }, baseCorsHeaders);
       return;
     }
 
     if (route.pattern === "/api/billing/summary") {
-      json(res, 200, await getBillingSummaryRuntime(), baseCorsHeaders);
+      json(res, 200, await getBillingSummaryRuntime(context.workspace.id), baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/billing/checkout" && req.method === "POST") {
+      const body = await readJson(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      const tier = body.tier === "professional" ? "professional" : "starter";
+      const interval = body.interval === "annual" ? "annual" : "monthly";
+      const session = await createStripeCheckoutSession({
+        tier,
+        interval,
+        userEmail: context.user.email,
+        workspaceId: context.workspace.id,
+        successUrl: billingSuccessUrl(),
+        cancelUrl: billingCancelUrl(),
+      });
+      json(res, 200, { url: session.url || "", sessionId: session.id || "" }, baseCorsHeaders);
+      return;
+    }
+
+    if (route.pattern === "/api/billing/webhook" && req.method === "POST") {
+      const rawBody = await readBodyText(req, { maxBytes: JSON_BODY_LIMIT_BYTES });
+      if (!verifyStripeWebhookSignature(rawBody, req.headers["stripe-signature"])) {
+        json(res, 403, { error: "Invalid Stripe webhook signature" }, baseCorsHeaders);
+        return;
+      }
+
+      const event = rawBody ? JSON.parse(rawBody) : {};
+      const object = event.data?.object || {};
+      const workspaceId = String(object.metadata?.workspace_id || object.client_reference_id || "").trim();
+
+      if (workspaceId) {
+        const currentBilling = await getBillingSummaryRuntime(workspaceId);
+        let nextBilling = currentBilling;
+
+        if (event.type === "checkout.session.completed") {
+          const tier = object.metadata?.tier === "professional" ? "professional" : "starter";
+          const interval = object.metadata?.interval === "annual" ? "annual" : "monthly";
+          nextBilling = mergeBillingSummary(currentBilling, {
+            planName: tier === "professional" ? "PROFESSIONAL" : "STARTER",
+            badge: "Trial attivo",
+            price: tier === "professional"
+              ? (interval === "annual" ? "EUR384" : "EUR40")
+              : (interval === "annual" ? "EUR192" : "EUR20"),
+            cadence: interval === "annual" ? "anno" : "mese",
+            billingInterval: interval === "annual" ? "Annuale" : "Mensile",
+            nextPayment: object.subscription ? "Dopo trial Stripe" : currentBilling.nextPayment,
+          });
+        }
+
+        if (event.type === "invoice.paid") {
+          nextBilling = mergeBillingSummary(currentBilling, {
+            badge: "Attivo",
+            nextPayment: object.lines?.data?.[0]?.period?.end
+              ? new Date(object.lines.data[0].period.end * 1000).toLocaleDateString("it-IT")
+              : currentBilling.nextPayment,
+          });
+        }
+
+        if (event.type === "invoice.payment_failed") {
+          nextBilling = mergeBillingSummary(currentBilling, {
+            badge: "Pagamento fallito",
+          });
+        }
+
+        if (event.type === "customer.subscription.deleted") {
+          nextBilling = mergeBillingSummary(currentBilling, {
+            badge: "Annullato",
+          });
+        }
+
+        await setScopedSettingRuntime(workspaceId, "billing", nextBilling);
+      }
+
+      json(res, 200, { received: true }, baseCorsHeaders);
       return;
     }
 
@@ -1099,7 +1505,12 @@ const server = createServer(async (req, res) => {
     }
 
     if (route.pattern === "/api/chat/conversations/:id/messages" && req.method === "GET") {
-      json(res, 200, { messages: await listConversationMessagesRuntime(route.params.id) }, baseCorsHeaders);
+      const conversation = await findConversationForUserRuntime(context.user.id, route.params.id);
+      if (!conversation) {
+        json(res, 404, { error: "Conversation not found" }, baseCorsHeaders);
+        return;
+      }
+      json(res, 200, { messages: await listConversationMessagesRuntime(context.user.id, route.params.id) }, baseCorsHeaders);
       return;
     }
 
@@ -1110,9 +1521,13 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      const userMessage = await addConversationMessageRuntime(route.params.id, "user", body.content.trim());
+      const userMessage = await addConversationMessageRuntime(context.user.id, route.params.id, "user", body.content.trim());
+      if (!userMessage) {
+        json(res, 404, { error: "Conversation not found" }, baseCorsHeaders);
+        return;
+      }
       const reply = await assistantReply(body.content);
-      const assistantMessage = await addConversationMessageRuntime(route.params.id, "assistant", reply);
+      const assistantMessage = await addConversationMessageRuntime(context.user.id, route.params.id, "assistant", reply);
       json(res, 201, { userMessage, assistantMessage }, baseCorsHeaders);
       return;
     }
@@ -1122,11 +1537,22 @@ const server = createServer(async (req, res) => {
     const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 600
       ? error.status
       : 500;
+    if (status >= 500) {
+      console.error("Request failed", {
+        error: error instanceof Error ? error.message : String(error),
+        path: req.url,
+        method: req.method,
+      });
+    }
     json(
       res,
       status,
       {
-        error: error instanceof Error ? error.message : "Internal server error",
+        error: status >= 500 && IS_PRODUCTION
+          ? "Internal server error"
+          : error instanceof Error
+            ? error.message
+            : "Internal server error",
       },
       baseCorsHeaders,
     );

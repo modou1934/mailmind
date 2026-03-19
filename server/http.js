@@ -29,7 +29,7 @@ export function empty(res, status = 204, extraHeaders = {}) {
   res.end();
 }
 
-export async function readJson(req, { maxBytes = 1024 * 1024 } = {}) {
+export async function readBodyText(req, { maxBytes = 1024 * 1024 } = {}) {
   const chunks = [];
   let totalBytes = 0;
 
@@ -45,18 +45,24 @@ export async function readJson(req, { maxBytes = 1024 * 1024 } = {}) {
   }
 
   if (chunks.length === 0) {
-    return {};
+    return "";
   }
 
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) {
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export async function readJson(req, { maxBytes = 1024 * 1024 } = {}) {
+  const raw = await readBodyText(req, { maxBytes });
+  if (!raw.trim()) {
     return {};
   }
 
   try {
     return JSON.parse(raw);
   } catch {
-    throw new Error("Invalid JSON body");
+    const error = new Error("Invalid JSON body");
+    error.status = 400;
+    throw error;
   }
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Building2, Globe2, ShieldCheck } from "lucide-react";
 import { api } from "@/api/privateApiClient";
 
 const Toggle = ({ checked, onChange }) => (
@@ -56,6 +56,24 @@ export default function Organizzazione() {
         <button className="flex items-center gap-1 text-sm text-brand font-medium hover:underline whitespace-nowrap">
           Aggiungi colleghi <ArrowRight className="w-3.5 h-3.5" />
         </button>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><Building2 className="w-3.5 h-3.5" /> Workspace</div>
+          <div className="mt-2 text-lg font-semibold text-gray-900">{orgName || "Il mio Studio"}</div>
+          <div className="text-xs text-gray-500">Identita' visibile a team, billing e integrazioni.</div>
+        </div>
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><Globe2 className="w-3.5 h-3.5" /> Dominio</div>
+          <div className="mt-2 text-lg font-semibold text-gray-900">{orgDomain || "Non impostato"}</div>
+          <div className="text-xs text-gray-500">Usato per auto-join e discoverability del team.</div>
+        </div>
+        <div className="rounded-xl border border-gray-100 bg-white p-4">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-400"><ShieldCheck className="w-3.5 h-3.5" /> Accesso</div>
+          <div className="mt-2 text-lg font-semibold text-gray-900">{settings.autoAdd ? "Auto-join attivo" : "Manuale"}</div>
+          <div className="text-xs text-gray-500">Controlla come i colleghi entrano nell'organizzazione.</div>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 p-5">

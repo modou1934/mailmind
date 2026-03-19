@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import { X, Copy, ArrowRight, Check, RefreshCw } from 'lucide-react';
 import { api } from '@/api/privateApiClient';
 
+const providerLabels = {
+  google: 'Google Calendar',
+  microsoft: 'Outlook Calendar',
+};
+
 const Toggle = ({ checked, onChange }) => (
   <button onClick={() => onChange(!checked)} className={`w-10 h-6 rounded-full transition-all flex-shrink-0 relative ${checked ? 'bg-gray-900' : 'bg-gray-300'}`}>
     <div className={`w-4 h-4 rounded-full bg-white shadow absolute top-1 transition-all ${checked ? 'left-5' : 'left-1'}`} />
@@ -32,16 +37,19 @@ export default function Pianificazione() {
   const [stats, setStats] = useState(schedulingStatsFromSummary());
   const [availableHours, setAvailableHours] = useState(defaultWeeklyHours);
   const [calendarEvents, setCalendarEvents] = useState([]);
-  const [calendarSummary, setCalendarSummary] = useState({});
+  const [calendarSummary, setCalendarSummary] = useState(/** @type {{ todayCount?: number, tomorrowCount?: number }} */ ({}));
   const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
+  const [calendarAccounts, setCalendarAccounts] = useState([]);
+  const [connectingProvider, setConnectingProvider] = useState('');
 
   useEffect(() => {
     const loadScheduling = async () => {
       try {
-        const [settingsPayload, calendarPayload] = await Promise.all([
+        const [settingsPayload, calendarPayload, accountsPayload] = await Promise.all([
           api.get('/settings/scheduling'),
           api.get('/calendar/events?limit=12'),
+          api.get('/integrations/accounts'),
         ]);
 
         if (settingsPayload.value) {
@@ -54,6 +62,7 @@ export default function Pianificazione() {
         setCalendarEvents(calendarPayload.events || []);
         setCalendarSummary(calendarPayload.summary || {});
         setStats(schedulingStatsFromSummary(calendarPayload.summary || {}));
+        setCalendarAccounts((accountsPayload.accounts || []).filter((account) => Array.isArray(account.capabilities) && account.capabilities.includes('calendar')));
       } catch (error) {
         console.error('Failed to load scheduling settings', error);
       }
@@ -74,6 +83,47 @@ export default function Pianificazione() {
       });
     } catch (error) {
       console.error('Failed to save scheduling settings', error);
+    }
+  };
+
+  const connectCalendarProvider = async (provider) => {
+    setConnectingProvider(provider);
+    try {
+      const res = await api.post(`/integrations/oauth/${provider}/start`);
+      const popup = window.open(res.url, 'oauth', 'width=500,height=700,left=200,top=100');
+      if (!popup) {
+        setConnectingProvider('');
+        return;
+      }
+
+      const handler = (event) => {
+        if (event.data?.type === 'oauth_success') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnectingProvider('');
+          setSyncMessage('Calendario collegato con successo');
+          window.location.reload();
+        }
+        if (event.data?.type === 'oauth_error') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnectingProvider('');
+          setSyncMessage(event.data.error || 'Connessione calendario fallita');
+        }
+      };
+      window.addEventListener('message', handler);
+
+      const poll = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(poll);
+          window.removeEventListener('message', handler);
+          setConnectingProvider('');
+        }
+      }, 1000);
+    } catch (error) {
+      console.error('Failed to connect calendar provider', error);
+      setConnectingProvider('');
+      setSyncMessage(error.message || 'Connessione calendario fallita');
     }
   };
 
@@ -138,12 +188,28 @@ export default function Pianificazione() {
               <div className="flex items-start justify-between gap-4 mb-4">
                 <div>
                   <h3 className="font-semibold text-gray-900 mb-1">Prossime riunioni dal calendario collegato</h3>
-                  <p className="text-sm text-gray-500">Google Calendar e Outlook vengono letti dal backend privato e usati anche per Dashboard e Notetaker.</p>
+                  <p className="text-sm text-gray-500">Google Calendar e Outlook Calendar sono connettibili separatamente e usati da Dashboard, Scheduling e Notetaker.</p>
                 </div>
                 <div className="text-right text-xs text-gray-500">
                   <div>Oggi: {calendarSummary.todayCount || 0}</div>
                   <div>Domani: {calendarSummary.tomorrowCount || 0}</div>
                 </div>
+              </div>
+              <div className="flex flex-wrap gap-3 mb-4">
+                {calendarAccounts.length ? calendarAccounts.map((account) => (
+                  <div key={account.id} className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-600">
+                    {providerLabels[account.provider] || account.provider} · {account.email}
+                  </div>
+                )) : (
+                  <>
+                    <button onClick={() => connectCalendarProvider('google-calendar')} disabled={connectingProvider === 'google-calendar'} className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      {connectingProvider === 'google-calendar' ? 'Connessione...' : 'Connetti Google Calendar'}
+                    </button>
+                    <button onClick={() => connectCalendarProvider('microsoft-calendar')} disabled={connectingProvider === 'microsoft-calendar'} className="rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60">
+                      {connectingProvider === 'microsoft-calendar' ? 'Connessione...' : 'Connetti Outlook Calendar'}
+                    </button>
+                  </>
+                )}
               </div>
               <div className="space-y-3">
                 {calendarEvents.length ? calendarEvents.slice(0, 5).map(event => (

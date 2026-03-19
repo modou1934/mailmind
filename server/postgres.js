@@ -14,6 +14,7 @@ const runtimeState = {
 
 let pool = null;
 let mirrorQueue = Promise.resolve();
+let schemaEnsurePromise = null;
 
 function databaseUrl() {
   return process.env.DATABASE_URL || "";
@@ -54,6 +55,27 @@ function ensurePool() {
   }
 
   return pool;
+}
+
+async function ensureSchema(postgres) {
+  if (schemaEnsurePromise) {
+    return schemaEnsurePromise;
+  }
+
+  schemaEnsurePromise = (async () => {
+    await postgres.query(`ALTER TABLE IF EXISTS connected_accounts ADD COLUMN IF NOT EXISTS capabilities_json TEXT NOT NULL DEFAULT '[]'`);
+    await postgres.query(`ALTER TABLE IF EXISTS calendar_events ADD COLUMN IF NOT EXISTS attendees_json TEXT NOT NULL DEFAULT '[]'`);
+    await postgres.query(`ALTER TABLE IF EXISTS meeting_sessions ADD COLUMN IF NOT EXISTS participants_json TEXT NOT NULL DEFAULT '[]'`);
+    await postgres.query(`ALTER TABLE IF EXISTS meeting_sessions ADD COLUMN IF NOT EXISTS share_status TEXT DEFAULT ''`);
+    await postgres.query(`ALTER TABLE IF EXISTS meeting_sessions ADD COLUMN IF NOT EXISTS shared_at TEXT DEFAULT ''`);
+    await postgres.query(`ALTER TABLE IF EXISTS meeting_sessions ADD COLUMN IF NOT EXISTS shared_recipients_json TEXT NOT NULL DEFAULT '[]'`);
+    await postgres.query(`CREATE TABLE IF NOT EXISTS meeting_session_chat_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  })().catch((error) => {
+    schemaEnsurePromise = null;
+    throw error;
+  });
+
+  return schemaEnsurePromise;
 }
 
 function quoteIdentifier(identifier) {
@@ -132,6 +154,7 @@ export function queuePostgresMirror(label, operation) {
     .catch(() => {})
     .then(async () => {
       try {
+        await ensureSchema(postgres);
         await operation(postgres);
         markRuntime({
           configured: true,
@@ -215,6 +238,7 @@ export async function queryPostgres(sql, values = []) {
   }
 
   try {
+    await ensureSchema(postgres);
     const result = await postgres.query(sql, values);
     markRuntime({
       configured: true,
@@ -244,6 +268,7 @@ export async function withPostgresTransaction(operation) {
 
   const client = await postgres.connect();
   try {
+    await ensureSchema(client);
     await client.query("BEGIN");
     const result = await operation(client);
     await client.query("COMMIT");

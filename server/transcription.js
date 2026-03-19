@@ -1,3 +1,5 @@
+import { fetchWithTimeout, readJsonResponse } from "./fetch.js"
+
 const DEEPGRAM_ENDPOINT = "https://api.deepgram.com/v1/listen";
 
 function configuredDeepgramApiKey() {
@@ -51,7 +53,7 @@ export async function transcribeAudioBuffer({ audioBuffer, mimeType = "audio/wav
     url.searchParams.set(key, value);
   }
 
-  const response = await fetch(url.toString(), {
+  const response = await fetchWithTimeout(url.toString(), {
     method: "POST",
     headers: {
       Authorization: `Token ${apiKey}`,
@@ -60,7 +62,7 @@ export async function transcribeAudioBuffer({ audioBuffer, mimeType = "audio/wav
     body: audioBuffer,
   });
 
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
   if (!response.ok) {
     const error = new Error(payload?.err_msg || payload?.error || "Deepgram transcription failed");
     error.status = response.status;

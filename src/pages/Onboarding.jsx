@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Check, X, ArrowRight, Plus } from 'lucide-react';
+import { Check, X, ArrowRight, Plus, Loader2 } from 'lucide-react';
+import { api } from '@/api/privateApiClient';
 
 const steps = ['Connetti inbox', 'Connetti calendario', 'Setup inbox', 'Scegli piano', 'Invita team', 'La tua inbox è organizzata', 'Le tue risposte', 'Note riunioni'];
 
@@ -9,6 +10,77 @@ export default function Onboarding() {
   const navigate = useNavigate();
   const [emails, setEmails] = useState(['']);
   const [plan, setPlan] = useState('annual');
+  const [connecting, setConnecting] = useState('');
+  const [accounts, setAccounts] = useState([]);
+
+  const inboxConnected = useMemo(
+    () => accounts.some((account) => Array.isArray(account.capabilities) && account.capabilities.includes('mail')),
+    [accounts],
+  );
+  const calendarConnected = useMemo(
+    () => accounts.some((account) => Array.isArray(account.capabilities) && account.capabilities.includes('calendar')),
+    [accounts],
+  );
+
+  const loadAccounts = async () => {
+    try {
+      const payload = await api.get('/integrations/accounts');
+      setAccounts(payload.accounts || []);
+    } catch (error) {
+      console.error('Failed to load accounts during onboarding', error);
+    }
+  };
+
+  useEffect(() => {
+    loadAccounts();
+  }, []);
+
+  const connectProvider = async (provider, { nextStep = false } = {}) => {
+    setConnecting(provider);
+
+    try {
+      const res = await api.post(`/integrations/oauth/${provider}/start`);
+      if (res.state) {
+        window.sessionStorage.setItem(`oauth-pending:${provider}`, res.state);
+      }
+      const popup = window.open(res.url, 'oauth', 'width=500,height=700,left=200,top=100');
+      if (!popup) {
+        setConnecting('');
+        return;
+      }
+
+      const handler = (event) => {
+        if (event.data?.type === 'oauth_success') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnecting('');
+          loadAccounts();
+          if (nextStep) {
+            setStep((current) => Math.min(current + 1, steps.length - 1));
+          }
+        }
+        if (event.data?.type === 'oauth_error') {
+          window.removeEventListener('message', handler);
+          clearInterval(poll);
+          setConnecting('');
+        }
+      };
+
+      window.addEventListener('message', handler);
+
+      const poll = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(poll);
+          window.removeEventListener('message', handler);
+          setConnecting('');
+          loadAccounts();
+        }
+      }, 1000);
+    } catch (error) {
+      console.error(`Failed to start onboarding OAuth for ${provider}`, error);
+      setConnecting('');
+    }
+  };
 
   const next = () => {
     if (step < steps.length - 1) setStep(s => s + 1);
@@ -55,12 +127,15 @@ export default function Onboarding() {
                 <div className="text-5xl">✉️</div>
                 <div className="text-5xl">📧</div>
               </div>
-              <button onClick={next} className="w-full flex items-center justify-center gap-2 bg-gray-900 text-white py-3 rounded-xl font-semibold hover:bg-gray-800 mb-3">
-                ✉️ Collega la tua inbox Gmail
+              <button onClick={() => connectProvider('google', { nextStep: true })} disabled={connecting === 'google'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
+                <img src="/assets/gmail.png" alt="Gmail" className="w-5 h-5 object-contain" /> Collega la tua inbox Gmail
+                {connecting === 'google' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
               </button>
-              <button onClick={next} className="w-full text-center text-sm text-brand font-medium hover:underline">
-                Connetti con Outlook
+              <button onClick={() => connectProvider('microsoft', { nextStep: true })} disabled={connecting === 'microsoft'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
+                <img src="/assets/outlook.png" alt="Outlook" className="w-5 h-5 object-contain" /> Connetti con Outlook
+                {connecting === 'microsoft' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
               </button>
+              {inboxConnected ? <p className="text-center text-xs text-green-600 mt-3">Inbox collegata correttamente. Puoi continuare o aggiungere altri account dopo.</p> : null}
               <p className="text-center text-xs text-gray-400 mt-4">MailMind non invia email per tuo conto · Puoi disconnetterti in qualsiasi momento</p>
               <div className="flex justify-center gap-3 mt-4">
                 {['🛡️', '🔒', '✅', '🇪🇺'].map((icon, i) => (
@@ -79,10 +154,15 @@ export default function Onboarding() {
                 <div className="text-5xl">📅</div>
                 <div className="text-5xl">📧</div>
               </div>
-              <button onClick={next} className="w-full flex items-center justify-center gap-2 bg-gray-900 text-white py-3 rounded-xl font-semibold hover:bg-gray-800 mb-3">
-                📅 Collega il tuo calendario Google
+              <button onClick={() => connectProvider('google-calendar', { nextStep: true })} disabled={connecting === 'google-calendar'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
+                <img src="/assets/google-calendar.png" alt="Google Calendar" className="w-5 h-5 object-contain" /> Collega il tuo calendario Google
+                {connecting === 'google-calendar' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
               </button>
-              <button onClick={next} className="w-full text-center text-sm text-brand font-medium hover:underline">Connetti con Outlook</button>
+              <button onClick={() => connectProvider('microsoft-calendar', { nextStep: true })} disabled={connecting === 'microsoft-calendar'} className="w-full flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-700 py-3 rounded-xl font-semibold hover:bg-gray-50 mb-3 disabled:opacity-60 transition-all shadow-sm">
+                <img src="/assets/outlook.png" alt="Outlook Calendar" className="w-5 h-5 object-contain" /> Connetti Outlook Calendar
+                {connecting === 'microsoft-calendar' ? <Loader2 className="w-4 h-4 animate-spin text-gray-400" /> : null}
+              </button>
+              {calendarConnected ? <p className="text-center text-xs text-green-600 mt-3">Calendario collegato: disponibilita, eventi e notetaker saranno sincronizzati.</p> : null}
             </div>
           )}
 
@@ -123,17 +203,20 @@ export default function Onboarding() {
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">QUASI CI SIAMO!</p>
               <h2 className="text-3xl font-black text-gray-900 mb-6">Quale piano fa per te?</h2>
               <div className="grid grid-cols-2 gap-4 mb-6">
-                {[
-                  { key: 'annual', label: 'Annuale', price: '€39/mese', badge: 'GRATIS per 14 giorni', popular: true },
-                  { key: 'monthly', label: 'Mensile', price: '€49/mese', badge: 'GRATIS per 14 giorni', popular: false },
-                ].map(p => (
+                  {[
+                    { key: 'starter-annual', label: 'Starter annuale', price: '€16/utente/mese', badge: '7 giorni gratis', popular: false, note: 'Fatturato a €192/anno • 20% di sconto' },
+                    { key: 'starter-monthly', label: 'Starter mensile', price: '€20/utente/mese', badge: '7 giorni gratis', popular: false, note: 'Per inbox, calendario e meetings smart' },
+                    { key: 'professional-annual', label: 'Professional annuale', price: '€32/utente/mese', badge: 'Più popolare', popular: true, note: 'Fatturato a €384/anno • 20% di sconto' },
+                    { key: 'professional-monthly', label: 'Professional mensile', price: '€40/utente/mese', badge: '7 giorni gratis', popular: false, note: 'Per team e automazioni avanzate' },
+                  ].map(p => (
                   <div key={p.key} onClick={() => setPlan(p.key)} className={`border-2 rounded-2xl p-5 cursor-pointer transition-all ${plan === p.key ? 'border-gray-900' : 'border-gray-200'}`}>
                     {p.popular && <div className="text-xs bg-gray-900 text-white px-2 py-0.5 rounded-full inline-block mb-2">Più popolare</div>}
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-bold text-gray-900">{p.label}</span>
                       <span className="text-xs text-green-600 font-medium bg-green-50 px-2 py-0.5 rounded">{p.badge}</span>
                     </div>
-                    <div className="text-2xl font-black text-gray-900 mb-3">{p.price}</div>
+                    <div className="text-2xl font-black text-gray-900 mb-1">{p.price}</div>
+                    <div className="text-xs text-gray-400 mb-3">{p.note}</div>
                     <div className="space-y-1.5">
                       {['Inbox e calendari illimitati', 'Ordinamento e categorizzazione email', 'Bozze nel tuo tono e lingua', 'Notetaker personalizzato', 'Integrazione PEC', 'Support chat'].map(f => (
                         <div key={f} className="flex gap-2 text-xs text-gray-600">

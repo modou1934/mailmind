@@ -43,8 +43,11 @@ export default function Categorizzazione() {
     topicStates: Object.fromEntries(topicLabels.map(l => [l.id, l.enabled])),
   });
   const [threads, setThreads] = useState([]);
+  const [emailRules, setEmailRules] = useState([]);
   const [loadingThreads, setLoadingThreads] = useState(true);
   const [processing, setProcessing] = useState(false);
+  const [savingRuleSet, setSavingRuleSet] = useState(false);
+  const [relabelingThreadId, setRelabelingThreadId] = useState('');
   const { toast } = useToast();
 
   const topicLabelMap = Object.fromEntries(topicLabels.map(label => [label.id, label.label]));
@@ -65,13 +68,15 @@ export default function Categorizzazione() {
   useEffect(() => {
     const loadPage = async () => {
       try {
-        const [payload] = await Promise.all([
+        const [payload, rulesPayload] = await Promise.all([
           api.get('/settings/categorization'),
+          api.get('/settings/email-rules'),
           loadThreads(),
         ]);
         if (payload.value) {
           setSettings(payload.value);
         }
+        setEmailRules(rulesPayload.value || []);
       } catch (error) {
         console.error('Failed to load categorization settings', error);
       }
@@ -82,7 +87,10 @@ export default function Categorizzazione() {
 
   const saveSettings = async () => {
     try {
-      await api.put('/settings/categorization', settings);
+      await Promise.all([
+        api.put('/settings/categorization', settings),
+        api.put('/settings/email-rules', emailRules),
+      ]);
       toast({ title: 'Preferenze aggiornate' });
     } catch (error) {
       console.error('Failed to save categorization settings', error);
@@ -115,6 +123,60 @@ export default function Categorizzazione() {
     }));
   };
 
+  const saveEmailRules = async () => {
+    setSavingRuleSet(true);
+    try {
+      await api.put('/settings/email-rules', emailRules);
+      toast({ title: 'Regole inbox aggiornate' });
+      await loadThreads();
+    } catch (error) {
+      toast({ title: 'Errore salvataggio regole', description: error.message, variant: 'destructive' });
+    } finally {
+      setSavingRuleSet(false);
+    }
+  };
+
+  const updateRule = (ruleId, patch) => {
+    setEmailRules(prev => prev.map(rule => rule.id === ruleId ? { ...rule, ...patch } : rule));
+  };
+
+  const addRule = () => {
+    setEmailRules(prev => ([
+      ...prev,
+      {
+        id: `rule-${Date.now()}`,
+        name: 'Nuova regola',
+        enabled: true,
+        match: 'any',
+        senders: [],
+        domains: [],
+        keywords: [],
+        category: 'todo',
+        inboxAction: 'keep_default',
+      },
+    ]));
+  };
+
+  const removeRule = (ruleId) => {
+    setEmailRules(prev => prev.filter(rule => rule.id !== ruleId));
+  };
+
+  const relabelThread = async (threadId, category) => {
+    setRelabelingThreadId(threadId);
+    try {
+      await api.post(`/mail/threads/${threadId}/relabel`, {
+        category,
+        reason: `Aggiornato manualmente dalla pagina Categorizzazione in ${category}.`,
+      });
+      await loadThreads();
+      toast({ title: 'Thread aggiornato' });
+    } catch (error) {
+      toast({ title: 'Errore aggiornamento thread', description: error.message, variant: 'destructive' });
+    } finally {
+      setRelabelingThreadId('');
+    }
+  };
+
   const categoryLabels = {
     todo: 'Da fare',
     fyi: 'Per conoscenza',
@@ -145,6 +207,9 @@ export default function Categorizzazione() {
 
   const categorizedThreads = threads.filter(thread => thread.categorized_at).length;
   const recentThreads = threads.slice(0, 5);
+  const todoThreads = threads.filter((thread) => thread.category === 'todo').slice(0, 4);
+  const inboxVisibleThreads = threads.filter((thread) => thread.inbox_action !== 'move_out').slice(0, 4);
+  const hiddenThreads = threads.filter((thread) => thread.inbox_action === 'move_out').slice(0, 4);
 
   return (
     <div className="h-full overflow-auto">
@@ -256,6 +321,28 @@ export default function Categorizzazione() {
                           <div className="mt-2 text-xs text-gray-600">
                             {thread.category_reason || 'In attesa di rielaborazione.'}
                           </div>
+                          <div className="mt-3 flex items-center gap-2">
+                            <select
+                              value={thread.category || 'fyi'}
+                              onChange={(event) => relabelThread(thread.id, event.target.value)}
+                              disabled={relabelingThreadId === thread.id}
+                              className="rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700"
+                            >
+                              {Object.entries(categoryLabels).map(([value, label]) => (
+                                <option key={value} value={value}>{label}</option>
+                              ))}
+                            </select>
+                            {thread.manual_override ? (
+                              <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
+                                Override manuale
+                              </span>
+                            ) : null}
+                            {thread.matched_rule_name ? (
+                              <span className="rounded-full bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700">
+                                {thread.matched_rule_name}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -265,6 +352,48 @@ export default function Categorizzazione() {
                     </div>
                   )}
                 </div>
+              </div>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                {[
+                  {
+                    title: 'Da rispondere oggi',
+                    tone: 'bg-red-50 border-red-100',
+                    badge: 'Todo',
+                    items: todoThreads,
+                  },
+                  {
+                    title: 'Visibili in inbox',
+                    tone: 'bg-white border-gray-100',
+                    badge: 'Inbox',
+                    items: inboxVisibleThreads,
+                  },
+                  {
+                    title: 'Fuori inbox',
+                    tone: 'bg-slate-50 border-slate-100',
+                    badge: 'Archived',
+                    items: hiddenThreads,
+                  },
+                ].map((section) => (
+                  <div key={section.title} className={`rounded-xl border p-4 ${section.tone}`}>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="text-sm font-semibold text-gray-900">{section.title}</div>
+                      <span className="rounded-full bg-white px-2 py-1 text-[11px] font-medium text-gray-500">{section.badge}</span>
+                    </div>
+                    {section.items.length ? (
+                      <div className="space-y-2">
+                        {section.items.map((thread) => (
+                          <div key={`${section.title}-${thread.id}`} className="rounded-lg border border-white/60 bg-white px-3 py-2">
+                            <div className="text-xs font-medium text-gray-900 truncate">{thread.subject}</div>
+                            <div className="mt-1 text-[11px] text-gray-500 truncate">{thread.from_name || thread.from_email}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-400">Nessun thread in questa vista.</div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -413,10 +542,87 @@ export default function Categorizzazione() {
 
             <div className="bg-cream rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-gray-900 mb-3">Regole personalizzate</h3>
-              <p className="text-xs text-gray-500 mb-3">Scegli quali indirizzi o domini vanno in ogni categoria.</p>
-              <button className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-gray-900 font-medium">
-                + Aggiungi email o dominio
-              </button>
+              <p className="text-xs text-gray-500 mb-3">Scegli quali indirizzi, domini o parole chiave devono finire in una categoria precisa.</p>
+              <div className="space-y-4">
+                {emailRules.map(rule => (
+                  <div key={rule.id} className="rounded-xl border border-gray-200 bg-white p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <input
+                        value={rule.name}
+                        onChange={(event) => updateRule(rule.id, { name: event.target.value })}
+                        className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900"
+                      />
+                      <Toggle checked={rule.enabled !== false} onChange={(value) => updateRule(rule.id, { enabled: value })} />
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <input
+                        value={(rule.senders || []).join(', ')}
+                        onChange={(event) => updateRule(rule.id, { senders: event.target.value.split(',').map(item => item.trim()).filter(Boolean) })}
+                        placeholder="Mittenti esatti, separati da virgola"
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      />
+                      <input
+                        value={(rule.domains || []).join(', ')}
+                        onChange={(event) => updateRule(rule.id, { domains: event.target.value.split(',').map(item => item.trim()).filter(Boolean) })}
+                        placeholder="Domini, es. cliente.it"
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      />
+                      <input
+                        value={(rule.keywords || []).join(', ')}
+                        onChange={(event) => updateRule(rule.id, { keywords: event.target.value.split(',').map(item => item.trim()).filter(Boolean) })}
+                        placeholder="Parole chiave in oggetto/snippet"
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm md:col-span-2"
+                      />
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <select
+                        value={rule.match || 'any'}
+                        onChange={(event) => updateRule(rule.id, { match: event.target.value })}
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      >
+                        <option value="any">Qualunque criterio</option>
+                        <option value="all">Tutti i criteri</option>
+                      </select>
+                      <select
+                        value={rule.category || 'todo'}
+                        onChange={(event) => updateRule(rule.id, { category: event.target.value })}
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      >
+                        {Object.entries(categoryLabels).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={rule.inboxAction || 'keep_default'}
+                        onChange={(event) => updateRule(rule.id, { inboxAction: event.target.value })}
+                        className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      >
+                        <option value="keep_default">Segui logica inbox</option>
+                        <option value="keep_inbox">Tieni in inbox</option>
+                        <option value="move_out">Togli da inbox</option>
+                      </select>
+                    </div>
+                    <button
+                      onClick={() => removeRule(rule.id)}
+                      className="text-xs font-medium text-red-600 hover:text-red-700"
+                    >
+                      Elimina regola
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex items-center gap-3">
+                <button onClick={addRule} className="flex items-center gap-1.5 text-sm text-gray-700 hover:text-gray-900 font-medium">
+                  + Aggiungi regola
+                </button>
+                <button
+                  onClick={saveEmailRules}
+                  disabled={savingRuleSet}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:border-gray-300 disabled:opacity-50"
+                >
+                  {savingRuleSet ? 'Salvataggio...' : 'Salva regole'}
+                </button>
+              </div>
             </div>
           </div>
         )}

@@ -49,19 +49,23 @@ const logos = ['Deloitte', 'Legance', 'Mediobanca', 'Pirelli', 'Ferrero', 'Bain 
 
 const pricingPlans = [
   {
-    name: 'Solo',
-    price: 19,
-    desc: 'Freelance, consulenti, professionisti individuali',
-    features: ['200 bozze/mese', 'Triage intelligente inbox', 'Digest mattutino', '1 account email', 'Supporto via email'],
-    cta: 'Inizia gratis',
+    name: 'Starter',
+    monthlyPrice: 20,
+    annualPrice: 16,
+    annualBilledAs: '€192/anno',
+    desc: 'Per individuals che vogliono inbox, calendario e meetings smart in un solo tool.',
+    features: ['Organization per 1 inbox and calendar', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes'],
+    cta: 'Inizia 7 giorni gratis',
     highlight: false,
   },
   {
-    name: 'Pro',
-    price: 39,
-    desc: 'Manager, imprenditori, avvocati, commercialisti',
-    features: ['Bozze illimitate', 'Integrazione PEC', 'Notetaker riunioni (5h/mese)', 'Template PA italiani', '2 account email (Gmail + Outlook)', 'Analytics avanzate', 'Supporto email + chat'],
-    cta: 'Inizia gratis 14 giorni',
+    name: 'Professional',
+    monthlyPrice: 40,
+    annualPrice: 32,
+    annualBilledAs: '€384/anno',
+    desc: 'Per team o professionisti che vogliono piu automazione, integrazioni e personalizzazione.',
+    features: ['Organization for multiple inboxes and calendars', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes', 'Schedules meetings across teams and time zones', 'Chat su inbox e note riunione', 'Upload files to train MailMind'],
+    cta: 'Inizia 7 giorni gratis',
     highlight: true,
     badge: 'Più popolare',
   },
@@ -91,8 +95,8 @@ const testimonials = [
 ];
 
 export default function LandingPage() {
-  const [billing, setBilling] = useState('annual');
   const [openFaq, setOpenFaq] = useState(null);
+  const [billing, setBilling] = useState('annual');
 
   const faqs = [
     { q: 'I miei dati email sono al sicuro?', a: 'Assolutamente. MailMind AI non archivia mai il contenuto delle tue email sui nostri server. Salviamo solo vettori semantici (non reversibili in testo) e metadati strutturati. Tutti i server sono in EU (Francoforte), conformi GDPR.' },
@@ -128,10 +132,10 @@ export default function LandingPage() {
             </button>
             <span className="text-sm text-gray-500 hidden md:inline">Inizia gratis:</span>
             <Link to="/onboarding" className="flex items-center gap-1.5 bg-gray-900 text-white text-sm px-3 py-2 rounded-lg hover:bg-gray-800 transition-colors font-medium">
-              <span className="text-base">M</span>
+              <img src="/assets/gmail.png" alt="Gmail" className="w-4 h-4 object-contain" />
             </Link>
             <Link to="/onboarding" className="flex items-center gap-1.5 bg-white border border-gray-200 text-gray-700 text-sm px-3 py-2 rounded-lg hover:bg-gray-50 transition-colors font-medium">
-              <span className="text-blue-600 font-bold text-base">O</span>
+              <img src="/assets/outlook.png" alt="Outlook" className="w-4 h-4 object-contain" />
             </Link>
           </div>
         </div>
@@ -152,15 +156,15 @@ export default function LandingPage() {
           </h1>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-3">
             <Link to="/onboarding" className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-semibold text-sm hover:bg-gray-800 transition-colors w-full sm:w-auto justify-center">
-              <span className="text-base">M</span>
+              <img src="/assets/gmail.png" alt="Gmail" className="w-4 h-4 object-contain" />
               Inizia con Gmail
             </Link>
             <Link to="/onboarding" className="flex items-center gap-2 bg-white border-2 border-gray-200 text-gray-800 px-6 py-3 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors w-full sm:w-auto justify-center">
-              <span className="text-blue-600 font-bold">O</span>
+              <img src="/assets/outlook.png" alt="Outlook" className="w-4 h-4 object-contain" />
               Inizia con Outlook
             </Link>
           </div>
-          <p className="text-sm text-gray-400 mb-3">Prova gratuita 14 giorni • Cancella quando vuoi</p>
+          <p className="text-sm text-gray-400 mb-3">Prova gratuita 7 giorni • Cancella quando vuoi</p>
           <button className="text-sm text-gray-600 border border-gray-200 rounded-full px-4 py-1.5 hover:bg-gray-50 transition-colors">
             Parla con noi
           </button>
@@ -293,7 +297,7 @@ export default function LandingPage() {
               <span className="text-blue-600 font-bold">O</span> Inizia con Outlook
             </Link>
           </div>
-          <p className="text-xs text-gray-400 mt-3">Prova gratuita 14 giorni • Cancella quando vuoi</p>
+          <p className="text-xs text-gray-400 mt-3">Prova gratuita 7 giorni • Cancella quando vuoi</p>
         </div>
       </section>
 
@@ -350,13 +354,13 @@ export default function LandingPage() {
       <section id="prezzi" className="py-20 px-6 bg-cream">
         <div className="max-w-5xl mx-auto text-center">
           <h2 className="text-3xl font-black text-gray-900 mb-2">Scegli quanto veloce vuoi lavorare</h2>
-          <p className="text-gray-500 mb-8">A partire da una prova gratuita di 14 giorni</p>
+          <p className="text-gray-500 mb-8">A partire da una prova gratuita di 7 giorni</p>
           <div className="inline-flex items-center bg-white border border-gray-200 rounded-full p-1 mb-10 shadow-sm">
             <button
               onClick={() => setBilling('annual')}
               className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${billing === 'annual' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'}`}
             >
-              Annuale (−20%)
+              Annuale (-20%)
             </button>
             <button
               onClick={() => setBilling('monthly')}
@@ -382,11 +386,11 @@ export default function LandingPage() {
                 <p className="text-xs text-gray-500 mb-4">{plan.desc}</p>
                 <div className="flex items-baseline gap-1 mb-1">
                   <span className="text-4xl font-black text-gray-900">
-                    €{billing === 'annual' ? Math.round(plan.price * 0.8) : plan.price}
+                    €{plan.enterprise ? plan.price : billing === 'annual' ? plan.annualPrice : plan.monthlyPrice}
                   </span>
-                  <span className="text-gray-500 text-sm">/utente/mese</span>
+                  <span className="text-gray-500 text-sm">{plan.enterprise ? '' : '/utente/mese'}</span>
                 </div>
-                {billing === 'annual' && <div className="text-xs text-gray-400 mb-5">fatturato annualmente</div>}
+                {!plan.enterprise && <div className="text-xs text-gray-400 mb-5">{billing === 'annual' ? `fatturato annualmente (${plan.annualBilledAs})` : 'fatturato mensilmente'} • 7 giorni gratis</div>}
                 <ul className="space-y-2 mb-6">
                   {plan.features.map(f => (
                     <li key={f} className="flex items-start gap-2 text-sm text-gray-700">
@@ -443,13 +447,13 @@ export default function LandingPage() {
           <h2 className="text-2xl font-black text-gray-900 mb-4">Pronto a provare MailMind AI?</h2>
           <div className="flex flex-col sm:flex-row gap-3 justify-center mb-4">
             <Link to="/onboarding" className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-semibold text-sm hover:bg-gray-800 transition-colors justify-center">
-              <span>M</span> Inizia con Gmail
+              <img src="/assets/gmail.png" alt="Gmail" className="w-4 h-4 object-contain" /> Inizia con Gmail
             </Link>
             <Link to="/onboarding" className="flex items-center gap-2 bg-white border-2 border-gray-200 text-gray-800 px-6 py-3 rounded-xl font-semibold text-sm hover:bg-gray-50 transition-colors justify-center">
-              <span className="text-blue-600 font-bold">O</span> Inizia con Outlook
+              <img src="/assets/outlook.png" alt="Outlook" className="w-4 h-4 object-contain" /> Inizia con Outlook
             </Link>
           </div>
-          <p className="text-xs text-gray-400 mb-4">Prova gratuita 14 giorni • Cancella quando vuoi</p>
+          <p className="text-xs text-gray-400 mb-4">Prova gratuita 7 giorni • Cancella quando vuoi</p>
           <button className="text-sm text-gray-600 border border-gray-200 rounded-full px-4 py-1.5 hover:bg-gray-50 transition-colors">
             Parla con noi
           </button>

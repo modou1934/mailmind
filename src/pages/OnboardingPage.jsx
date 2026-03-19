@@ -179,8 +179,10 @@ export default function OnboardingPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   {[
-                    { id: 'annual', label: 'Annuale', price: '€31/mese', badge: 'Più popolare', note: 'Risparmia €96 all\'anno', features: ['Inbox e calendari illimitati', 'Categorizzazione email', 'Bozze nel tuo stile', 'Notetaker riunioni con brand', 'Calendario team avanzato', 'Integrazione PEC', 'Chat supporto'] },
-                    { id: 'monthly', label: 'Mensile', price: '€39/mese', badge: null, note: '', features: ['Inbox e calendari illimitati', 'Categorizzazione email', 'Bozze nel tuo stile', 'Notetaker riunioni con brand', 'Calendario team avanzato', 'Integrazione PEC', 'Chat supporto'] },
+                    { id: 'starter-annual', label: 'Starter annuale', price: '€16/utente/mese', badge: null, note: 'Fatturato a €192/anno • 7 giorni gratis', features: ['Organization for 1 inbox and calendar', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes'] },
+                    { id: 'starter-monthly', label: 'Starter mensile', price: '€20/utente/mese', badge: null, note: '7 giorni gratis', features: ['Organization for 1 inbox and calendar', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes'] },
+                    { id: 'professional-annual', label: 'Professional annuale', price: '€32/utente/mese', badge: 'Più popolare', note: 'Fatturato a €384/anno • 7 giorni gratis', features: ['Organization for multiple inboxes and calendars', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes', 'Schedules meetings across teams and time zones', 'Chat on inbox and meeting notes', 'Upload files to train MailMind'] },
+                    { id: 'professional-monthly', label: 'Professional mensile', price: '€40/utente/mese', badge: null, note: '7 giorni gratis', features: ['Organization for multiple inboxes and calendars', 'Drafts replies in your voice', 'Notetaker joins meetings and takes notes', 'Schedules meetings across teams and time zones', 'Chat on inbox and meeting notes', 'Upload files to train MailMind'] },
                   ].map(plan => (
                     <div
                       key={plan.id}

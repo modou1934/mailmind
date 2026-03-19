@@ -1,6 +1,13 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 const CSRF_COOKIE = "mailmind_csrf";
 
+/**
+ * @typedef {Object} RequestOptions
+ * @property {string=} method
+ * @property {unknown=} body
+ * @property {Record<string, string>=} headers
+ */
+
 function readCookie(name) {
   if (typeof document === "undefined") {
     return "";
@@ -15,6 +22,7 @@ function readCookie(name) {
   return match ? decodeURIComponent(match.slice(prefix.length)) : "";
 }
 
+/** @param {string} path @param {RequestOptions=} options */
 async function request(path, { method = "GET", body, headers } = {}) {
   const csrfToken = method !== "GET" ? readCookie(CSRF_COOKIE) : "";
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -35,6 +43,7 @@ async function request(path, { method = "GET", body, headers } = {}) {
 
   if (!response.ok) {
     const message = payload?.error || `Request failed with status ${response.status}`;
+    /** @type {Error & { status?: number, data?: unknown }} */
     const error = new Error(message);
     error.status = response.status;
     error.data = payload;

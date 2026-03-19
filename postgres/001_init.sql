@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS connected_accounts (
   encrypted_access_token TEXT DEFAULT '',
   encrypted_refresh_token TEXT DEFAULT '',
   expires_at TEXT DEFAULT '',
+  capabilities_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -247,6 +248,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   end_at TEXT NOT NULL,
   timezone TEXT DEFAULT '',
   attendee_count INTEGER NOT NULL DEFAULT 0,
+  attendees_json TEXT NOT NULL DEFAULT '[]',
   is_all_day INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -278,9 +280,22 @@ CREATE TABLE IF NOT EXISTS meeting_sessions (
   key_points_json TEXT NOT NULL DEFAULT '[]',
   action_items_json TEXT NOT NULL DEFAULT '[]',
   follow_up_email TEXT DEFAULT '',
+  participants_json TEXT NOT NULL DEFAULT '[]',
+  share_status TEXT DEFAULT '',
+  shared_at TEXT DEFAULT '',
+  shared_recipients_json TEXT NOT NULL DEFAULT '[]',
   error_message TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meeting_session_chat_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS mail_threads_external_thread_id_idx

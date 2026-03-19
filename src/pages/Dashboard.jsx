@@ -11,12 +11,14 @@ export default function Dashboard() {
   ]);
   const [meetings, setMeetings] = useState({ today: [], tomorrow: [] });
   const [schedulingLink, setSchedulingLink] = useState("https://mailmind.ai/e/utente/30");
+  const [awaitingReplies, setAwaitingReplies] = useState([]);
 
   const loadDashboard = async () => {
     try {
-      const [dashboardPayload, schedulingPayload] = await Promise.all([
+      const [dashboardPayload, schedulingPayload, awaitingReplyPayload] = await Promise.all([
         api.get("/dashboard"),
         api.get("/settings/scheduling"),
+        api.get("/mail/awaiting-reply"),
       ]);
 
       setStats(dashboardPayload.stats || []);
@@ -26,6 +28,7 @@ export default function Dashboard() {
       if (scheduling.link) {
         setSchedulingLink(`https://${scheduling.link}/30`);
       }
+      setAwaitingReplies(awaitingReplyPayload.threads || []);
     } catch (error) {
       console.error("Failed to load dashboard", error);
     }
@@ -110,6 +113,35 @@ export default function Dashboard() {
               </Link>
             </div>
           </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-100 p-5 mb-6">
+          <div className="flex items-center justify-between gap-4 mb-4">
+            <div>
+              <h2 className="font-semibold text-gray-900 mb-1">In attesa di risposta</h2>
+              <p className="text-sm text-gray-500">Thread che hai gia' gestito ma che meritano un follow-up.</p>
+            </div>
+            <Link to="/bozze" className="text-sm font-medium text-brand hover:underline">Apri pipeline bozze</Link>
+          </div>
+          {awaitingReplies.length ? (
+            <div className="space-y-3">
+              {awaitingReplies.slice(0, 4).map((thread) => (
+                <div key={thread.id} className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900">{thread.subject}</div>
+                      <div className="text-xs text-gray-500">{thread.from_name || thread.from_email} • follow-up dopo {thread.waiting_days} giorni</div>
+                    </div>
+                    <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-700">
+                      Awaiting reply
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">Nessun follow-up urgente: la coda awaiting reply e' vuota.</p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-4">

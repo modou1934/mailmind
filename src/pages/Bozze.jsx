@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Trash2 } from 'lucide-react';
+import { Loader2, Trash2, Sparkles } from 'lucide-react';
 import { api } from '@/api/privateApiClient';
 import { useToast } from '@/components/ui/use-toast';
 
@@ -53,6 +53,7 @@ export default function Bozze() {
     enableDrafts: true,
     unusedDraftsDays: 14,
     responseStyle: 'everything',
+    draftVariants: 3,
     enableFollowUps: true,
     followUpDays: 3,
     customTone: false,
@@ -62,6 +63,8 @@ export default function Bozze() {
     fontColor: '#111111',
     includeSignature: true,
     defaultSignature: '',
+    schedulingSignature: '',
+    includeSchedulingLink: false,
     showThreadingGmail: false,
     showThreadingOutlook: false,
   });
@@ -73,7 +76,11 @@ export default function Bozze() {
   const [pushingDraftId, setPushingDraftId] = useState(null);
   const [deletingDraftId, setDeletingDraftId] = useState(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [draftOptions, setDraftOptions] = useState(null);
+  const [loadingDraftOptionsFor, setLoadingDraftOptionsFor] = useState(null);
   const { toast } = useToast();
+  const eligibleThreads = threads.filter((thread) => thread.draft_eligible);
+  const awaitingReplyThreads = threads.filter((thread) => thread.category === 'followUp' || thread.needs_reply);
 
   const loadDraftWorkspace = async () => {
     setLoadingPipeline(true);
@@ -163,6 +170,37 @@ export default function Bozze() {
     }
   };
 
+  const loadDraftOptions = async (thread) => {
+    setLoadingDraftOptionsFor(thread.id);
+    try {
+      const payload = await api.post('/drafts/options', { threadId: thread.id });
+      setDraftOptions({
+        thread,
+        variants: payload.variants || [],
+      });
+    } catch (error) {
+      console.error('Failed to load draft options', error);
+      toast({ title: 'Errore varianti bozza', description: error.message, variant: 'destructive' });
+    } finally {
+      setLoadingDraftOptionsFor(null);
+    }
+  };
+
+  const applyDraftOption = async (threadId, content) => {
+    setGeneratingKey(threadId);
+    try {
+      await api.post('/drafts/generate', { threadId, customContent: content });
+      setDraftOptions(null);
+      toast({ title: 'Bozza salvata', description: 'La variante selezionata e stata inserita nella pipeline.' });
+      await loadDraftWorkspace();
+    } catch (error) {
+      console.error('Failed to save selected draft option', error);
+      toast({ title: 'Errore salvataggio variante', description: error.message, variant: 'destructive' });
+    } finally {
+      setGeneratingKey(null);
+    }
+  };
+
   const pushDraft = async (draftId) => {
     setPushingDraftId(draftId);
     try {
@@ -212,6 +250,39 @@ export default function Bozze() {
 
   return (
     <div className="h-full overflow-auto">
+      {draftOptions ? (
+        <div className="fixed inset-0 z-40 bg-black/30 p-6 flex items-center justify-center" onClick={() => setDraftOptions(null)}>
+          <div className="max-w-4xl w-full max-h-[85vh] overflow-auto rounded-2xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Varianti bozza</h3>
+                <p className="text-sm text-gray-500">{draftOptions.thread.subject}</p>
+              </div>
+              <button onClick={() => setDraftOptions(null)} className="text-sm text-gray-500 hover:text-gray-900">Chiudi</button>
+            </div>
+            <div className="grid gap-4 p-6 lg:grid-cols-3">
+              {draftOptions.variants.map((variant, index) => (
+                <div key={`${variant.label}-${index}`} className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                  <div className="mb-2">
+                    <div className="text-sm font-semibold text-gray-900">{variant.label}</div>
+                    <div className="text-xs text-gray-500">{variant.description}</div>
+                  </div>
+                  <pre className="min-h-[220px] whitespace-pre-wrap rounded-lg bg-white p-3 text-xs text-gray-700">{variant.content}</pre>
+                  <button
+                    onClick={() => applyDraftOption(draftOptions.thread.id, variant.content)}
+                    disabled={generatingKey === draftOptions.thread.id}
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-xs font-medium text-white hover:bg-gray-800 disabled:opacity-50"
+                  >
+                    {generatingKey === draftOptions.thread.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                    Usa questa variante
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white sticky top-0 z-10">
         <h1 className="text-base font-semibold text-gray-900">Bozze</h1>
         <button onClick={saveSettings} className="text-sm text-gray-500 hover:text-gray-900 transition-colors font-medium">
@@ -286,6 +357,24 @@ export default function Bozze() {
                   <div className="mt-1 text-2xl font-semibold text-gray-900">{drafts.filter(draft => draft.provider_push_status === 'synced').length}</div>
                 </div>
               </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-emerald-700">Bozze pronte</div>
+                  <div className="mt-1 text-2xl font-semibold text-emerald-900">{drafts.filter((draft) => draft.provider_push_status === 'synced').length}</div>
+                  <p className="mt-2 text-xs text-emerald-800">Gia' presenti su Gmail o Outlook, pronte per la revisione finale.</p>
+                </div>
+                <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-amber-700">Awaiting reply</div>
+                  <div className="mt-1 text-2xl font-semibold text-amber-900">{awaitingReplyThreads.length}</div>
+                  <p className="mt-2 text-xs text-amber-800">Thread che meritano follow-up o una seconda risposta operativa.</p>
+                </div>
+                <div className="rounded-xl border border-sky-100 bg-sky-50 p-4">
+                  <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Thread bozzabili</div>
+                  <div className="mt-1 text-2xl font-semibold text-sky-900">{eligibleThreads.length}</div>
+                  <p className="mt-2 text-xs text-sky-800">Email che hanno contesto sufficiente per una bozza pronta in un click.</p>
+                </div>
+              </div>
             </div>
 
             <div className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
@@ -357,7 +446,13 @@ export default function Bozze() {
               </div>
 
               <div className="bg-cream rounded-xl border border-gray-200 p-5">
-                <h3 className="text-sm font-semibold text-gray-900 mb-3">Thread recenti</h3>
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">Thread recenti</h3>
+                    <p className="text-xs text-gray-500">Usa questa coda come triage: prima i thread bozzabili, poi le email solo FYI.</p>
+                  </div>
+                  <span className="rounded-full bg-white px-2 py-1 text-[11px] font-medium text-gray-500">{threads.length} thread</span>
+                </div>
                 {loadingPipeline ? (
                   <div className="flex items-center gap-2 text-sm text-gray-500">
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -365,7 +460,7 @@ export default function Bozze() {
                   </div>
                 ) : threads.length > 0 ? (
                   <div className="space-y-3">
-                    {threads.slice(0, 6).map(thread => (
+                    {[...eligibleThreads, ...threads.filter((thread) => !thread.draft_eligible)].slice(0, 8).map(thread => (
                       <div key={thread.id} className="rounded-xl border border-gray-100 bg-white p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -374,22 +469,44 @@ export default function Bozze() {
                               {thread.from_name} • {thread.account_email || 'account privato'}
                             </div>
                           </div>
-                          <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${
-                            thread.needs_reply ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
-                          }`}>
-                            {thread.needs_reply ? 'Richiede risposta' : 'FYI'}
-                          </span>
+                          <div className="flex flex-wrap justify-end gap-1">
+                            <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${
+                              thread.needs_reply ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'
+                            }`}>
+                              {thread.needs_reply ? 'Richiede risposta' : 'FYI'}
+                            </span>
+                            {thread.category ? (
+                              <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">
+                                {thread.category}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                         <p className="mt-2 text-xs text-gray-600">{thread.snippet}</p>
+                        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-400">
+                          <span>{thread.draft_eligible ? 'Bozza consigliata' : thread.draft_eligibility_reason || 'Nessuna bozza automatica'}</span>
+                          {thread.matched_rule_name ? <span>• Regola {thread.matched_rule_name}</span> : null}
+                          {thread.manual_override ? <span>• Override manuale</span> : null}
+                        </div>
                         {thread.draft_eligible ? (
-                          <button
-                            onClick={() => generateDrafts(thread.id)}
-                            disabled={generatingKey === thread.id}
-                            className="mt-3 inline-flex items-center gap-2 text-xs font-medium text-brand hover:text-brand/80 disabled:opacity-50"
-                          >
-                            {generatingKey === thread.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                            Genera bozza per questo thread
-                          </button>
+                          <div className="mt-3 flex flex-wrap items-center gap-3">
+                            <button
+                              onClick={() => generateDrafts(thread.id)}
+                              disabled={generatingKey === thread.id}
+                              className="inline-flex items-center gap-2 text-xs font-medium text-brand hover:text-brand/80 disabled:opacity-50"
+                            >
+                              {generatingKey === thread.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                              Genera bozza per questo thread
+                            </button>
+                            <button
+                              onClick={() => loadDraftOptions(thread)}
+                              disabled={loadingDraftOptionsFor === thread.id}
+                              className="inline-flex items-center gap-2 text-xs font-medium text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                            >
+                              {loadingDraftOptionsFor === thread.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                              Vedi varianti
+                            </button>
+                          </div>
                         ) : thread.needs_reply ? (
                           <div className="mt-3 text-xs text-gray-400">{thread.draft_eligibility_reason || 'Thread non idoneo per bozza automatica.'}</div>
                         ) : null}
@@ -433,6 +550,10 @@ export default function Bozze() {
                 <option value="important">Rispondo solo alle email importanti</option>
                 <option value="minimal">Rispondo solo quando strettamente necessario</option>
               </select>
+              <div className="mt-4">
+                <div className="text-xs text-gray-500 mb-2">Quante varianti vuoi vedere per ogni thread?</div>
+                <Counter value={settings.draftVariants} onChange={v => setSettings(p => ({ ...p, draftVariants: Math.min(3, Math.max(1, v)) }))} min={1} max={3} />
+              </div>
             </div>
 
             {/* Follow-ups */}
@@ -471,6 +592,21 @@ export default function Bozze() {
                   className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-brand/20 resize-none h-24"
                 />
               )}
+              <div className="mt-4 flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-gray-900">Includi link di scheduling nelle bozze</div>
+                  <div className="text-xs text-gray-500">Utile per email che propongono una call o chiedono disponibilita'.</div>
+                </div>
+                <Toggle checked={settings.includeSchedulingLink} onChange={v => setSettings(p => ({ ...p, includeSchedulingLink: v }))} />
+              </div>
+              {settings.includeSchedulingLink ? (
+                <textarea
+                  value={settings.schedulingSignature}
+                  onChange={e => setSettings(p => ({ ...p, schedulingSignature: e.target.value }))}
+                  placeholder="Es: Se ti e piu comodo, puoi prenotare direttamente qui: {{scheduling_link}}"
+                  className="mt-3 w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 bg-white focus:outline-none resize-none h-20"
+                />
+              ) : null}
             </div>
 
             {/* Font settings */}

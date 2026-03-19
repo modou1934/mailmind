@@ -24,6 +24,10 @@ export default function Impostazioni() {
       </div>
       <div className="flex">
         <div className="w-40 px-4 py-4 border-r border-gray-100 bg-white min-h-screen">
+          <div className="mb-4 rounded-xl border border-gray-100 bg-gray-50 px-3 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-gray-400">Workspace settings</div>
+            <div className="mt-1 text-sm font-semibold text-gray-900">Controllo team, billing e integrazioni</div>
+          </div>
           {subNav.map(item => (
             <Link
               key={item.path}
