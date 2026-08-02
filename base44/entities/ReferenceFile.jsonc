@@ -1,0 +1,42 @@
+{
+  "name": "ReferenceFile",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "file_name": {
+      "type": "string",
+      "description": "Original uploaded file name"
+    },
+    "file_url": {
+      "type": "string",
+      "description": "Uploaded file URL"
+    },
+    "file_type": {
+      "type": "string",
+      "description": "MIME type or logical file type"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "description": "File size in bytes"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "uploaded",
+        "processing",
+        "ready",
+        "failed"
+      ],
+      "default": "uploaded",
+      "description": "Processing status"
+    }
+  },
+  "required": [
+    "user_id",
+    "file_name",
+    "file_url"
+  ]
+}

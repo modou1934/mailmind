@@ -1,0 +1,67 @@
+{
+  "name": "Draft",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Owner Base44 user ID"
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "google",
+        "microsoft"
+      ],
+      "description": "Email provider"
+    },
+    "account_email": {
+      "type": "string",
+      "description": "Connected account email address"
+    },
+    "email_thread_id": {
+      "type": "string",
+      "description": "Reference to EmailThread entity ID"
+    },
+    "thread_id": {
+      "type": "string",
+      "description": "Provider thread or conversation ID"
+    },
+    "subject": {
+      "type": "string",
+      "description": "Reply subject"
+    },
+    "content": {
+      "type": "string",
+      "description": "AI-generated draft content"
+    },
+    "gmail_draft_id": {
+      "type": "string",
+      "description": "Legacy Gmail draft ID field"
+    },
+    "provider_draft_id": {
+      "type": "string",
+      "description": "Provider draft ID"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "generata",
+        "inviata",
+        "scartata",
+        "modificata"
+      ],
+      "default": "generata"
+    },
+    "tone": {
+      "type": "string",
+      "description": "Tone used to generate draft"
+    }
+  },
+  "required": [
+    "user_id",
+    "provider",
+    "account_email",
+    "email_thread_id",
+    "content"
+  ]
+}

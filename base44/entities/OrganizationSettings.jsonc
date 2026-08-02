@@ -1,0 +1,51 @@
+{
+  "name": "OrganizationSettings",
+  "type": "object",
+  "properties": {
+    "owner_user_id": {
+      "type": "string",
+      "description": "Workspace owner user ID"
+    },
+    "organization_name": {
+      "type": "string",
+      "description": "Organization display name"
+    },
+    "organization_domain": {
+      "type": "string",
+      "description": "Primary organization email domain"
+    },
+    "auto_add_by_domain": {
+      "type": "boolean",
+      "default": true,
+      "description": "Automatically add users matching the domain"
+    },
+    "discoverable": {
+      "type": "boolean",
+      "default": true,
+      "description": "Allow the organization to be discoverable"
+    },
+    "plan_name": {
+      "type": "string",
+      "enum": [
+        "free",
+        "standard",
+        "pro"
+      ],
+      "default": "pro",
+      "description": "Current organization plan"
+    },
+    "billing_cycle": {
+      "type": "string",
+      "enum": [
+        "none",
+        "monthly",
+        "annual"
+      ],
+      "default": "monthly",
+      "description": "Organization billing cycle"
+    }
+  },
+  "required": [
+    "owner_user_id"
+  ]
+}

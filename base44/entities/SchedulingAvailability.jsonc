@@ -1,0 +1,38 @@
+{
+  "name": "SchedulingAvailability",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "day_of_week": {
+      "type": "integer",
+      "description": "0=Monday, 6=Sunday"
+    },
+    "start_time": {
+      "type": "string",
+      "description": "Availability start time in HH:MM"
+    },
+    "end_time": {
+      "type": "string",
+      "description": "Availability end time in HH:MM"
+    },
+    "timezone": {
+      "type": "string",
+      "default": "Europe/Rome",
+      "description": "Availability timezone"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether this availability block is active"
+    }
+  },
+  "required": [
+    "user_id",
+    "day_of_week",
+    "start_time",
+    "end_time"
+  ]
+}

@@ -1,0 +1,109 @@
+{
+  "name": "EmailThread",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Owner Base44 user ID"
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "google",
+        "microsoft"
+      ],
+      "description": "Email provider"
+    },
+    "account_email": {
+      "type": "string",
+      "description": "Connected account email address"
+    },
+    "thread_id": {
+      "type": "string",
+      "description": "Provider thread or conversation ID"
+    },
+    "message_id": {
+      "type": "string",
+      "description": "Provider message ID"
+    },
+    "subject": {
+      "type": "string",
+      "description": "Email subject"
+    },
+    "from_email": {
+      "type": "string",
+      "description": "Sender email address"
+    },
+    "from_name": {
+      "type": "string",
+      "description": "Sender display name"
+    },
+    "snippet": {
+      "type": "string",
+      "description": "Short preview of email body"
+    },
+    "body": {
+      "type": "string",
+      "description": "Full email body text"
+    },
+    "received_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the email was received"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "da_rispondere",
+        "marketing",
+        "notifica",
+        "da_seguire",
+        "per_conoscenza",
+        "pec",
+        "burocrazia",
+        "contratto",
+        "newsletter",
+        "altro"
+      ],
+      "description": "AI-assigned category"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "nuovo",
+        "letto",
+        "bozza_generata",
+        "risposto",
+        "archiviato"
+      ],
+      "default": "nuovo"
+    },
+    "draft_id": {
+      "type": "string",
+      "description": "ID of the generated draft entity"
+    },
+    "gmail_draft_id": {
+      "type": "string",
+      "description": "Legacy Gmail draft ID field"
+    },
+    "provider_draft_id": {
+      "type": "string",
+      "description": "Provider draft ID"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Provider labels or categories applied"
+    }
+  },
+  "required": [
+    "user_id",
+    "provider",
+    "account_email",
+    "thread_id",
+    "message_id",
+    "subject"
+  ]
+}

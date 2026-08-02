@@ -1,0 +1,76 @@
+{
+  "name": "DraftSettings",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "enable_drafts": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable automatic reply draft generation"
+    },
+    "unused_drafts_days": {
+      "type": "integer",
+      "default": 14,
+      "description": "Days before unused drafts expire"
+    },
+    "response_style": {
+      "type": "string",
+      "enum": [
+        "everything",
+        "important",
+        "minimal"
+      ],
+      "default": "everything",
+      "description": "User's preferred reply frequency"
+    },
+    "enable_followups": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable automatic follow-up draft creation"
+    },
+    "followup_days": {
+      "type": "integer",
+      "default": 3,
+      "description": "Days before generating a follow-up draft"
+    },
+    "custom_tone_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable user-specific tone instructions"
+    },
+    "custom_tone_text": {
+      "type": "string",
+      "description": "Custom drafting instructions"
+    },
+    "font_family": {
+      "type": "string",
+      "default": "Gmail/Outlook default",
+      "description": "Preferred email font family"
+    },
+    "font_size": {
+      "type": "integer",
+      "default": 0,
+      "description": "Preferred email font size"
+    },
+    "font_color": {
+      "type": "string",
+      "default": "#111111",
+      "description": "Preferred email font color"
+    },
+    "include_signature": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include a signature in generated drafts"
+    },
+    "default_signature": {
+      "type": "string",
+      "description": "Default signature appended to drafts"
+    }
+  },
+  "required": [
+    "user_id"
+  ]
+}

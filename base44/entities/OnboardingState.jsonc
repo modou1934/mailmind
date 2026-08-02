@@ -1,0 +1,53 @@
+{
+  "name": "OnboardingState",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "current_step": {
+      "type": "integer",
+      "default": 0,
+      "description": "Current onboarding step index"
+    },
+    "completed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether onboarding is completed"
+    },
+    "selected_plan": {
+      "type": "string",
+      "enum": [
+        "none",
+        "monthly",
+        "annual"
+      ],
+      "default": "none",
+      "description": "Plan selected during onboarding"
+    },
+    "email_connected": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether an email account has been connected"
+    },
+    "calendar_connected": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether a calendar has been connected"
+    },
+    "inbox_setup_completed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether inbox preferences have been confirmed"
+    },
+    "invited_teammates_count": {
+      "type": "integer",
+      "default": 0,
+      "description": "How many teammates were invited during onboarding"
+    }
+  },
+  "required": [
+    "user_id"
+  ]
+}

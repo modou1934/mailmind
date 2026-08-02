@@ -1,0 +1,18 @@
+{
+  "name": "TeamMembership",
+  "type": "object",
+  "properties": {
+    "team_id": {
+      "type": "string",
+      "description": "Team entity ID"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "Member user ID"
+    }
+  },
+  "required": [
+    "team_id",
+    "user_id"
+  ]
+}

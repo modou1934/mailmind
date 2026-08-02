@@ -1,0 +1,40 @@
+{
+  "name": "UserOAuthToken",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "google",
+        "microsoft"
+      ],
+      "description": "OAuth provider"
+    },
+    "email": {
+      "type": "string",
+      "description": "Connected email address"
+    },
+    "access_token": {
+      "type": "string",
+      "description": "OAuth access token"
+    },
+    "refresh_token": {
+      "type": "string",
+      "description": "OAuth refresh token"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Token expiration time"
+    }
+  },
+  "required": [
+    "user_id",
+    "provider",
+    "access_token"
+  ]
+}

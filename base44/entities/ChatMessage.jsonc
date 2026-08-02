@@ -1,0 +1,33 @@
+{
+  "name": "ChatMessage",
+  "type": "object",
+  "properties": {
+    "conversation_id": {
+      "type": "string",
+      "description": "ChatConversation entity ID"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "user",
+        "assistant",
+        "system"
+      ],
+      "description": "Message role"
+    },
+    "content": {
+      "type": "string",
+      "description": "Message content"
+    }
+  },
+  "required": [
+    "conversation_id",
+    "user_id",
+    "role",
+    "content"
+  ]
+}

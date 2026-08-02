@@ -1,0 +1,22 @@
+{
+  "name": "AccountSignature",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "email": {
+      "type": "string",
+      "description": "Connected account email address"
+    },
+    "signature_content": {
+      "type": "string",
+      "description": "Signature text or HTML for this account"
+    }
+  },
+  "required": [
+    "user_id",
+    "email"
+  ]
+}

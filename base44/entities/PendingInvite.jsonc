@@ -1,0 +1,42 @@
+{
+  "name": "PendingInvite",
+  "type": "object",
+  "properties": {
+    "invited_email": {
+      "type": "string",
+      "description": "Email address invited to the workspace"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "user",
+        "admin"
+      ],
+      "default": "user",
+      "description": "Role requested for the invited user"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "accepted",
+        "revoked",
+        "expired"
+      ],
+      "default": "pending",
+      "description": "Invite status"
+    },
+    "invited_by_user_id": {
+      "type": "string",
+      "description": "User ID of the inviter"
+    },
+    "organization_owner_user_id": {
+      "type": "string",
+      "description": "Workspace owner user ID"
+    }
+  },
+  "required": [
+    "invited_email",
+    "invited_by_user_id"
+  ]
+}

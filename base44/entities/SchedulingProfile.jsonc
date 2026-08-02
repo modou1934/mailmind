@@ -1,0 +1,48 @@
+{
+  "name": "SchedulingProfile",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "slug": {
+      "type": "string",
+      "description": "Public scheduling link slug"
+    },
+    "meeting_duration_minutes": {
+      "type": "integer",
+      "default": 30,
+      "description": "Default meeting duration"
+    },
+    "timezone": {
+      "type": "string",
+      "default": "Europe/Rome",
+      "description": "Scheduling timezone"
+    },
+    "include_link_in_drafts": {
+      "type": "boolean",
+      "default": true,
+      "description": "Include scheduling link in generated drafts"
+    },
+    "generate_drafts_for_proposals": {
+      "type": "boolean",
+      "default": true,
+      "description": "Generate drafts for proposed meeting times"
+    },
+    "send_confirmation_emails": {
+      "type": "boolean",
+      "default": true,
+      "description": "Send confirmation emails when meetings are booked"
+    },
+    "is_active": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the scheduling profile is active"
+    }
+  },
+  "required": [
+    "user_id",
+    "slug"
+  ]
+}

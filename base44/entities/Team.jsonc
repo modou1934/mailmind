@@ -1,0 +1,22 @@
+{
+  "name": "Team",
+  "type": "object",
+  "properties": {
+    "owner_user_id": {
+      "type": "string",
+      "description": "Workspace owner user ID"
+    },
+    "name": {
+      "type": "string",
+      "description": "Team name"
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional team description"
+    }
+  },
+  "required": [
+    "owner_user_id",
+    "name"
+  ]
+}

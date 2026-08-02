@@ -1,0 +1,82 @@
+{
+  "name": "InboxSettings",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "move_notification_out": {
+      "type": "boolean",
+      "default": true,
+      "description": "Move notification emails out of the main inbox"
+    },
+    "move_follow_up_out": {
+      "type": "boolean",
+      "default": true,
+      "description": "Move follow-up emails out of the main inbox"
+    },
+    "move_marketing_out": {
+      "type": "boolean",
+      "default": true,
+      "description": "Move marketing emails out of the main inbox"
+    },
+    "keep_todo_in_inbox": {
+      "type": "boolean",
+      "default": false,
+      "description": "Keep emails requiring action in the main inbox"
+    },
+    "keep_fyi_in_inbox": {
+      "type": "boolean",
+      "default": false,
+      "description": "Keep FYI emails in the main inbox"
+    },
+    "respect_existing_categories": {
+      "type": "boolean",
+      "default": true,
+      "description": "Do not reprocess already categorized emails"
+    },
+    "enable_topic_labels": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable topic-based email labels"
+    },
+    "enable_categorization": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable inbox categorization"
+    },
+    "marketing_filter_mode": {
+      "type": "string",
+      "enum": [
+        "obvious",
+        "cold_unknown",
+        "cold_newsletter",
+        "all"
+      ],
+      "default": "cold_unknown",
+      "description": "How aggressively marketing emails are filtered"
+    },
+    "topic_states": {
+      "type": "object",
+      "description": "Enabled state for topic labels"
+    },
+    "alternative_emails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Additional email addresses belonging to the user"
+    },
+    "custom_rules": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "Custom inbox routing rules"
+    }
+  },
+  "required": [
+    "user_id"
+  ]
+}

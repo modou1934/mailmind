@@ -1,0 +1,66 @@
+{
+  "name": "MeetingNote",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "title": {
+      "type": "string",
+      "description": "Meeting title"
+    },
+    "source_type": {
+      "type": "string",
+      "enum": [
+        "uploaded_audio",
+        "meeting_url",
+        "manual"
+      ],
+      "description": "How the meeting note was created"
+    },
+    "meeting_url": {
+      "type": "string",
+      "description": "Meeting URL when available"
+    },
+    "file_url": {
+      "type": "string",
+      "description": "Uploaded recording file URL"
+    },
+    "transcript": {
+      "type": "string",
+      "description": "Meeting transcript"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Generated meeting summary"
+    },
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Extracted meeting action items"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "uploaded",
+        "transcribing",
+        "ready",
+        "failed"
+      ],
+      "default": "uploaded",
+      "description": "Meeting note processing status"
+    },
+    "duration_seconds": {
+      "type": "integer",
+      "description": "Meeting duration in seconds"
+    }
+  },
+  "required": [
+    "user_id",
+    "title",
+    "source_type"
+  ]
+}

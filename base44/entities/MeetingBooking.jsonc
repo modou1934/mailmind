@@ -1,0 +1,70 @@
+{
+  "name": "MeetingBooking",
+  "type": "object",
+  "properties": {
+    "scheduling_profile_id": {
+      "type": "string",
+      "description": "SchedulingProfile entity ID"
+    },
+    "owner_user_id": {
+      "type": "string",
+      "description": "User who owns the scheduling link"
+    },
+    "guest_name": {
+      "type": "string",
+      "description": "Guest full name"
+    },
+    "guest_email": {
+      "type": "string",
+      "description": "Guest email address"
+    },
+    "scheduled_date": {
+      "type": "string",
+      "description": "Meeting date in YYYY-MM-DD"
+    },
+    "start_time": {
+      "type": "string",
+      "description": "Meeting start time in HH:MM"
+    },
+    "end_time": {
+      "type": "string",
+      "description": "Meeting end time in HH:MM"
+    },
+    "timezone": {
+      "type": "string",
+      "description": "Timezone used for booking"
+    },
+    "meeting_duration_minutes": {
+      "type": "integer",
+      "description": "Meeting duration in minutes"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Optional notes from the guest"
+    },
+    "google_event_id": {
+      "type": "string",
+      "description": "Google Calendar event ID"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "cancelled"
+      ],
+      "default": "confirmed",
+      "description": "Booking status"
+    }
+  },
+  "required": [
+    "scheduling_profile_id",
+    "owner_user_id",
+    "guest_name",
+    "guest_email",
+    "scheduled_date",
+    "start_time",
+    "end_time",
+    "timezone",
+    "meeting_duration_minutes"
+  ]
+}

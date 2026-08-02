@@ -1,0 +1,34 @@
+{
+  "name": "ChatConversation",
+  "type": "object",
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "description": "Base44 user ID"
+    },
+    "title": {
+      "type": "string",
+      "description": "Conversation title"
+    },
+    "context_type": {
+      "type": "string",
+      "enum": [
+        "general",
+        "email",
+        "meeting",
+        "workspace"
+      ],
+      "default": "workspace",
+      "description": "Primary conversation context"
+    },
+    "last_message_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the last message was added"
+    }
+  },
+  "required": [
+    "user_id",
+    "title"
+  ]
+}
